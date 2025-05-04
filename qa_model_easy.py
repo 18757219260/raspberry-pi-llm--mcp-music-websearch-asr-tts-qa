@@ -4,7 +4,7 @@ import asyncio
 from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain_core.embeddings import Embeddings
-from llama_cpp import Llama  # Keep this for the embeddings model
+from llama_cpp import Llama  
 import nest_asyncio
 import time
 from openai import OpenAI
@@ -59,8 +59,8 @@ class KnowledgeQA:
 ]
         # 初始化Qwen API客户端
         self.client = OpenAI(
-            api_key="sk-08bb8f6bf6ad4bbd9f33913fb6b6e248",
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="",
+            base_url="",
         )
         
         # 系统消息设置
