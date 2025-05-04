@@ -4,9 +4,9 @@ import time
 from aip import AipSpeech
 
 # 百度api
-APP_ID = '118613302'
-API_KEY = '7hSl10mvmtaCndZoab0S3BXQ' 
-SECRET_KEY = 'Fv10TxiFLmWb4UTAdLeA2eaTIE56QtkW'
+APP_ID = ''
+API_KEY = '' 
+SECRET_KEY = ''
 
 client = AipSpeech(APP_ID, API_KEY, SECRET_KEY)
 
