@@ -42,7 +42,7 @@ nest_asyncio.apply()
 # 系统配置
 # ==================================
 # 树莓派模式配置
-IS_COMPUTER_MODE = True  # 设置为False表示树莓派模式(实时说话)
+IS_COMPUTER_MODE = False  # 设置为False表示树莓派模式(实时说话)
 
 # ==================================
 # 对话管理器类 (从conversation.py)
@@ -585,13 +585,12 @@ class KnowledgeQA:
         # 初始化Qwen API客户端
         self.client = OpenAI(
             api_key="",
-            base_url="",
-        )
+            base_url="")
         
         # 系统消息设置
         self.sys_msg = {
-            "role": "system",
-            "content": "你是一个甘薯专家。请根据提供的参考内容回答问题，回答内容简洁。如果参考内容中没有相关信息，请回答'我不知道'。"
+            "role": "system",                                                           
+            "content": "回答简洁"
         }
 
     def _load_vectorstore_with_retry(self, max_retries=3):
@@ -630,9 +629,9 @@ class KnowledgeQA:
         
         # 如果有对话历史，将其加入提示
         if context:
-            prompt = f"对话历史:\n{context}\n\n参考内容:\n{doc_context}\n\n当前问题:\n{question}\n\n要求:{query}\n\n"
+            prompt = f"对话历史:\n{context}\n\n参考内容:\n{doc_context}\n\n当前问题:\n{question}\n\n"#要求:{query}\n\n"
         else:
-            prompt = f"参考内容:\n{doc_context}\n\n问题:\n{question}\n\n要求:{query}\n\n"
+            prompt = f"参考内容:\n{doc_context}\n\n问题:\n{question}\n\n"#要求:{query}\n\n"
         
         # 使用Qwen API进行流式调用
         messages = [
@@ -676,59 +675,70 @@ class MessageBubble(QWidget):
         self.text = text
         self.is_user = is_user
         self._msg_label = None
-        
-        # 为7寸屏幕优化的布局
+
+        # 头像路径
+        self.avatar_path = "/home/wuye/vscode/raspberrypi_5/rasoberry/guzz.png"
+        self.robot_path = "/home/wuye/vscode/raspberrypi_5/rasoberry/sweetpotato.jpg"
+
+        # 为7寸屏幕优化布局
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 8, 5, 8)
-        layout.setSpacing(10)
-        
-        # 用户头像
-        avatar = QLabel()
-        avatar.setFixedSize(36, 36)
-        avatar.setStyleSheet(f"""
-            background-color: {"#9EE846" if is_user else "#5B89DB"}; 
-            border-radius: 18px;
-            color: white;
-            font-weight: bold;
-            text-align: center;
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(15)
+
+        avatar_size = 60
+        avatar_label = QLabel()
+        avatar_label.setFixedSize(avatar_size, avatar_size)
+        avatar_label.setAlignment(Qt.AlignCenter)
+        avatar_label.setStyleSheet(f"""
+            border-radius: {avatar_size//2}px;
+            background-color: #DDDDDD;
         """)
-        avatar.setAlignment(Qt.AlignCenter)
-        avatar.setText("我" if is_user else "薯")
-        
+
+        # 加载头像图像
+        avatar_path = self.avatar_path if is_user else self.robot_path
+        pixmap = QPixmap(avatar_path)
+        if not pixmap.isNull():
+            scaled = pixmap.scaled(
+                avatar_size, avatar_size,
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation
+            )
+            avatar_label.setPixmap(scaled)
+        else:
+            avatar_label.setText("我" if is_user else "薯")
+
         # 消息文本
         self._msg_label = QLabel(text)
         self._msg_label.setFont(QFont("微软雅黑", 14))
         self._msg_label.setWordWrap(True)
+        self._msg_label.setMaximumWidth(360)
         self._msg_label.setStyleSheet(f"""
-            background-color: {"#A4E75A" if is_user else "#FFFFFF"}; 
+            background-color: {"#A4E75A" if is_user else "#FFFFFF"};
             color: #303030;
             border-radius: 12px;
             padding: 12px;
-            margin: 2px;
         """)
-        
-        # 根据消息来源调整布局
+
+        # 按消息来源设置左右布局
         if is_user:
             layout.addStretch()
             layout.addWidget(self._msg_label)
-            layout.addWidget(avatar)
+            layout.addWidget(avatar_label)
         else:
-            layout.addWidget(avatar)
+            layout.addWidget(avatar_label)
             layout.addWidget(self._msg_label)
             layout.addStretch()
-        
-        # 设置最小高度
-        self.setMinimumHeight(50)
-        # 设置最大宽度 (屏幕适配)
-        self._msg_label.setMaximumWidth(300)
-    
+
+        self.setMinimumHeight(60)
+
     @property
     def msg_label(self):
         return self._msg_label
-    
+
     def update_text(self, text):
         if self._msg_label:
             self._msg_label.setText(text)
+
 
 class ChatArea(QScrollArea):
     """优化的聊天区域"""
@@ -865,7 +875,7 @@ class SweetPotatoGUI(QMainWindow):
     def __init__(self, user_name="吴大王"):
         super().__init__()
         self.user_name = user_name
-        self.user_avatar_path = None  # 用户头像路径
+        # self.user_avatar_path =  "/home/wuye/vscode/raspberrypi_5/rasoberry/guzz.jpg"# 用户头像路径
         self.current_bot_bubble = None  # 当前的机器人消息气泡
         
         # 初始化组件
@@ -945,25 +955,34 @@ class SweetPotatoGUI(QMainWindow):
         user_layout.setSpacing(10)
         user_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 用户头像
-        self.user_avatar_label = QLabel()
-        self.user_avatar_label.setFixedSize(40, 40)
-        self.user_avatar_label.setStyleSheet("""
-            background-color: white;
-            border-radius: 20px;
-            border: 2px solid #FFFFFF;
-        """)
-        self.user_avatar_label.setAlignment(Qt.AlignCenter)
-        self.user_avatar_label.setText("头像")
-        self.user_avatar_label.mousePressEvent = self.choose_avatar
+        # # 用户头像
+        # self.user_avatar_label = QLabel()
+        # self.user_avatar_label.setFixedSize(60, 60)
+        # self.user_avatar_label.setStyleSheet("""
+        #     background-color: white;
+        #     border-radius: 20px;
+        #     border: 2px solid #FFFFFF;
+        # """)
+        # if self.user_avatar_path:
+        #     pixmap = QPixmap(self.user_avatar_path)
+        #     if not pixmap.isNull():
+        #         scaled_pixmap = pixmap.scaled(
+        #             60, 60,
+        #             Qt.KeepAspectRatio,
+        #             Qt.SmoothTransformation
+        #         )
+        #         self.user_avatar_label.setPixmap(scaled_pixmap)
+        # # self.user_avatar_label.setAlignment(Qt.AlignCenter)
+        # # self.user_avatar_label.setText("头像")
+        # # self.user_avatar_label.mousePressEvent = self.choose_avatar
         
-        # 用户名称标签
+        # # 用户名称标签
         user_label = QLabel(self.user_name)
-        user_label.setFont(QFont("微软雅黑", 14))
+        user_label.setFont(QFont("微软雅黑", 20, QFont.Bold))
         user_label.setStyleSheet("color: white;")
         user_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         
-        user_layout.addWidget(self.user_avatar_label)
+        # user_layout.addWidget(self.user_avatar_label)
         user_layout.addWidget(user_label)
         
         header_layout.addWidget(icon_label)
@@ -1016,27 +1035,27 @@ class SweetPotatoGUI(QMainWindow):
         welcome_msg = f"您好，{self.user_name}！我是甘薯知识助手，请通过语音向我提问关于甘薯的问题。"
         self.chat_area.add_message(welcome_msg)
         
-    def choose_avatar(self, event):
-        """选择用户头像"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择头像",
-            "",
-            "图片文件 (*.jpg *.jpeg *.png)"
-        )
+    # def choose_avatar(self, event):
+    #     """选择用户头像"""
+    #     file_path, _ = QFileDialog.getOpenFileName(
+    #         self,
+    #         "选择头像",
+    #         "",
+    #         "图片文件 (*.jpg *.jpeg *.png)"
+    #     )
         
-        if file_path:
-            self.user_avatar_path = file_path
-            # 加载并设置头像
-            pixmap = QPixmap(file_path)
-            if not pixmap.isNull():
-                scaled_pixmap = pixmap.scaled(
-                    36, 36, 
-                    Qt.KeepAspectRatio, 
-                    Qt.SmoothTransformation
-                )
-                self.user_avatar_label.setPixmap(scaled_pixmap)
-                self.user_avatar_label.setText("")  # 清除原有文本
+    #     if file_path:
+    #         self.user_avatar_path = file_path
+    #         # 加载并设置头像
+    #         pixmap = QPixmap(file_path)
+    #         if not pixmap.isNull():
+    #             scaled_pixmap = pixmap.scaled(
+    #                 36, 36, 
+    #                 Qt.KeepAspectRatio, 
+    #                 Qt.SmoothTransformation
+    #             )
+    #             self.user_avatar_label.setPixmap(scaled_pixmap)
+    #             self.user_avatar_label.setText("")  # 清除原有文本
     
     def auto_start_listening(self):
         """自动开始实时聆听 (树莓派模式)"""

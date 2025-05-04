@@ -2,7 +2,6 @@ import pyaudio
 import webrtcvad
 import time
 from aip import AipSpeech
-
 # 百度api
 APP_ID = ''
 API_KEY = '' 
@@ -13,18 +12,18 @@ client = AipSpeech(APP_ID, API_KEY, SECRET_KEY)
 class ASRhelper:
     def __init__(self):
         # 设置音频参数
-        self.CHUNK = 480  
-        self.FORMAT = pyaudio.paInt16
-        self.CHANNELS = 1
-        self.RATE = 16000
-        self.SILENCE_DURATION = 1.0  
-        self.MAX_RECORD_SECONDS = 5  
-        self.NO_SPEECH_TIMEOUT = 2.0  
+        self.CHUNK = 480  #读取帧
+        self.FORMAT = pyaudio.paInt16#符合百度api编码
+        self.CHANNELS = 1#单声道
+        self.RATE = 16000#采样率
+        self.SILENCE_DURATION = 1.0  #静音时长
+        self.MAX_RECORD_SECONDS = 5  #录音最长时间
+        self.NO_SPEECH_TIMEOUT = 2.0  #没有语音的超时时间
         # self.voice = "zh-CN-XiaoyiNeural"
 
-        self.vad = webrtcvad.Vad(2)  
+        self.vad = webrtcvad.Vad(3)  #语言检测
      
-        self.p, self.stream = self.get_audio_stream()
+        self.p, self.stream = self.get_audio_stream() 
 
     def get_audio_stream(self):
         """初始化输入音频流"""
@@ -69,7 +68,7 @@ class ASRhelper:
 
                 if not speech_started and (time.time() - start_time) >= self.NO_SPEECH_TIMEOUT:
                     print("请你提出问题？😾")
-                    start_time = time.time()  # Reset start time
+                    start_time = time.time()  
 
             except Exception as e:
                 print("录音有错误！！！", str(e))

@@ -1,0 +1,5 @@
+conversation_tracking.json
+chat.log
+chatbox.log
+face_model.pkl
+__pycache__/*
