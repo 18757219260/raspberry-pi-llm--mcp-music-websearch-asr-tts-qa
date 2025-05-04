@@ -19,6 +19,9 @@
 - **语音输入与输出**  
    `百度语音识别API` 和 `edge_tts` 语音识别、语音合成
     `qwenAPI`和本地llama.cpp `text2vec_base_chinese_q8`
+  **终端UI显示**
+  去除opencv，保留asr,tts,qa_model的ui
+
 
 
 ---
@@ -49,8 +52,10 @@ python face_create.py
 执行以下命令运行主交互程序：
 
 ```bash
-
+终端
 python main_stream.py 
 
+UI显示
+python app.py
 
 ```
