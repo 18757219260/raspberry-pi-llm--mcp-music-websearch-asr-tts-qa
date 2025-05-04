@@ -75,8 +75,8 @@ class ConversationManager:
         recent_conversations = list(self.conversation_history)[-max_context:]
         context = []
         for conv in recent_conversations:
-            context.append(f"Q: {conv['question']}")
-            context.append(f"A: {conv['answer']}")
+            context.append(f"qustion: {conv['question']}")
+            context.append(f"answer: {conv['answer']}")
         return "\n".join(context)
     
     async def save_tracking_data(self):

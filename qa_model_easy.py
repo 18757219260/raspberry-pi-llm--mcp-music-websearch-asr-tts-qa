@@ -57,8 +57,8 @@ class KnowledgeQA:
         
         # 初始化Qwen API客户端
         self.client = OpenAI(
-            api_key="sk-08bb8f6bf6ad4bbd9f33913fb6b6e248",
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="",
+            base_url="",
         )
         
         # 系统消息设置
@@ -76,12 +76,12 @@ class KnowledgeQA:
                 time.sleep(1)
         raise RuntimeError("加载向量存储失败")
     
-    async def ask_stream(self, question, use_context=True):
+    async def ask_stream(self, question, context=True):
         start_time = time.time()
         
 
         context = ""
-        if use_context:
+        if context:
             context = self.conversation_manager.get_conversation_context(max_context=3)
         
         docs = await asyncio.to_thread(
