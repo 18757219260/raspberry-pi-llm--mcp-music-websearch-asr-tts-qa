@@ -35,10 +35,14 @@ class LoadingAnimation:
     def animate(self):
         # 动画符号选项
         spinners = [
-            "⣾⣽⣻⢿⡿⣟⣯⣷",
             "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
             "🌑🌒🌓🌔🌕🌖🌗🌘",
-            "🕐🕑🕒🕓🕔🕕🕖🕗🕘🕙🕚🕛"
+            ["[■□□□□□□]", "[■■□□□□□]", "[■■■□□□□]", "[■■■■□□□]","[■■■■■□□]", "[■■■■■■□]","[■■■■■■■]"],
+            ["(•_•)", "( •_•)>⌐■-■", "(⌐■_■)"],
+            ["🐱  ", " 🐱 ", "  🐱", " 🐱 "],
+            ["🐶➡️", "🐶 ➡️", "🐶  ➡️", "🐶   ➡️"]
+
+
         ]
         spinner = spinners[2]  
         
@@ -47,7 +51,7 @@ class LoadingAnimation:
                 break
             sys.stdout.write(f"\r{char} {self.desc} ")
             sys.stdout.flush()
-            time.sleep(0.1)
+            time.sleep(0.3)
         # 清除加载动画行
         sys.stdout.write(f"\r{'✅ ' + self.desc + ' 完成!':60}\n")
         sys.stdout.flush()
@@ -242,7 +246,7 @@ class SweetPotatoChatbox:
             print(prompt_text.replace("11", ""))
         
         # 减少提示后的等待时间
-        await asyncio.sleep(0.3)  # 从1.5减少到0.3秒
+        await asyncio.sleep(0.3)  
         
         # 清空音频缓冲
         await self.clear_audio_buffer()
@@ -271,18 +275,18 @@ class SweetPotatoChatbox:
             
         question = question_result["result"][0]
         logging.info(f"💬 问题: {question}")
-        print(f"💬 问题: {question}")
+        # print(f"💬 问题: {question}")
         self.current_question_start_time = time.time()
         
         # 检查是否是退出命令
         if question.lower() in ["退出", "退出。", "没有了", "没有了。", "没了", "没了。", "无", "无。", "关闭", "关闭。", "停止", "停止。", "拜拜", "拜拜。", "再见", "再见。","退出了。"]:
-            logging.info("="*50)
+            logging.info("="*80)
             logging.info(f"🚪 收到退出命令: '{question}'，lower() 结果是: '{question.lower()}'")
-            logging.info("="*50)
+            logging.info("="*80)
             
-            print("\n" + "═"*80)
-            print(f"{'🚪 收到退出命令: ' + question:^80}")
-            print("═"*80)
+            # print("\n" + "═"*80)
+            # print(f"{'🚪 收到退出命令: ' + question:^80}")
+            # print("═"*80)
             
             try:
                 await self.tts.speak_text("11好的，感谢使用甘薯知识助手，再见！", wait=True)
@@ -343,12 +347,11 @@ class SweetPotatoChatbox:
                         answer_loader = LoadingAnimation("正在思考")
                         answer_loader.start()
                         
-                        # 获取对话上下文
-                        context = self.conversation_manager.get_conversation_context()
+
                         
                         full_answer = ""
                         # 将上下文传递给 ask_stream 方法
-                        async for chunk in self.qa.ask_stream(question, context):
+                        async for chunk in self.qa.ask_stream(question,context=True):
                             full_answer += chunk
                         
                         # 停止加载动画
