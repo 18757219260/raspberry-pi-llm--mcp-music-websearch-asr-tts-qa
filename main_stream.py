@@ -282,7 +282,7 @@ class SweetPotatoChatbox:
         # 解析用户选择
         if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完","是的","没错","好","好的","继续","接着","听","放","歌"]):
             return "wait"
-        elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在","提问","快","推进","立",]):
+        elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在","提问","快","推进"]):
             return "immediate"
         elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以","知道"]):
             return "uncertain"
@@ -461,7 +461,7 @@ class SweetPotatoChatbox:
 
     
         
-        if any(word in question.lower() for word in [  "拜拜", "再见", "退出"]):
+        if any(word in question.lower() for word in ["拜拜", "再见", "退出"]):
             logging.info("="*80)
             logging.info(f"🚪 收到退出命令: '{question}'")
             logging.info("="*80)
