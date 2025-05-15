@@ -20,9 +20,9 @@ class MkFaiss:
     
     def __init__(
         self,
-        knowledge_path: str = "knowledge.json",
+        knowledge_path: str = "/home/wuye/vscode/raspberrypi_5/rasoberry/knowledge.json",
         faiss_index_path: str = "faiss_index",
-        embedding_model_path: str = "./text2vec-base-chinese-q8.gguf",
+        embedding_model_path: str = "/home/wuye/vscode/raspberrypi_5/rasoberry/text2vec_base_chinese_q8.gguf",
         chunk_size: int = 500,
         chunk_overlap: int = 100
     ):
@@ -42,12 +42,12 @@ class MkFaiss:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         
-        # 跟踪知识库文件的最后修改时间
-        self.last_knowledge_update = os.path.getmtime(self.knowledge_path) if os.path.exists(self.knowledge_path) else None
+
         
         try:
             self.embedding_model = self._init_embeddings()
-            self.vectorstore = self.load_or_create_vectorstore()
+            # 修改为直接创建向量存储，不再尝试加载现有的
+            self.vectorstore = None
         except Exception as e:
             logging.error(f"向量存储初始化失败: {e}")
             raise
@@ -139,14 +139,7 @@ class MkFaiss:
     def load_or_create_vectorstore(self):
         """加载现有向量存储或创建新的向量存储"""
         try:
-            if os.path.exists(self.faiss_index_path):
-                logging.info(f"加载现有向量数据库: {self.faiss_index_path}")
-                return FAISS.load_local(
-                    self.faiss_index_path,
-                    self.embedding_model,
-                    allow_dangerous_deserialization=True
-                )
-                
+            # 直接创建新的向量数据库，而不是尝试加载现有的
             logging.info("创建新的向量数据库")
             data = self.load_data()
             docs = self.create_documents(data)
@@ -162,7 +155,7 @@ class MkFaiss:
             return vectorstore
             
         except Exception as e:
-            logging.error(f"加载或创建向量数据库失败: {e}")
+            logging.error(f"创建向量数据库失败: {e}")
             raise RuntimeError(f"向量数据库处理失败: {e}")
     
     def update_knowledge(self) -> bool:
@@ -179,7 +172,6 @@ class MkFaiss:
             chunks = self.split_documents(docs)
             self.vectorstore = FAISS.from_documents(chunks, self.embedding_model)
             self.vectorstore.save_local(self.faiss_index_path)
-            self.last_knowledge_update = os.path.getmtime(self.knowledge_path)
             logging.info("知识库更新成功！")
             return True
             
@@ -188,16 +180,13 @@ class MkFaiss:
             return False
     
     def check_and_update_if_needed(self) -> bool:
-        """检查知识库文件是否已修改，并在需要时更新"""
+        """直接更新知识库，不再检查时间戳"""
         if not os.path.exists(self.knowledge_path):
             logging.warning(f"知识库文件 {self.knowledge_path} 不存在")
             return False
             
-        current_mtime = os.path.getmtime(self.knowledge_path)
-        if self.last_knowledge_update is None or current_mtime > self.last_knowledge_update:
-            logging.info("知识库已更新，正在重新加载...")
-            return self.update_knowledge()
-        return False
+        logging.info("直接更新知识库...")
+        return self.update_knowledge()
     
     def get_vectorstore(self):
         """获取当前向量存储"""
@@ -209,10 +198,10 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="知识库向量构建工具")
-    parser.add_argument("--knowledge", default="knowledge.json", help="知识库JSON文件路径")
+    parser.add_argument("--knowledge", default="/home/wuye/vscode/raspberrypi_5/rasoberry/knowledge.json", help="知识库JSON文件路径")
     parser.add_argument("--index", default="faiss_index", help="FAISS索引目录路径")
-    parser.add_argument("--model", default="./text2vec-base-chinese-q8.gguf", help="text2vec-base-chinese-q8.gguf模型路径")
-    parser.add_argument("--force", action="store_true", help="强制更新知识库")
+    parser.add_argument("--model", default="/home/wuye/vscode/raspberrypi_5/rasoberry/text2vec_base_chinese_q8.gguf", help="text2vec-base-chinese-q8.gguf模型路径")
+    parser.add_argument("--force", action="store_true", help="此参数已不再使用，保留仅为兼容性")
     args = parser.parse_args()
     
     try:
@@ -222,19 +211,13 @@ if __name__ == "__main__":
             embedding_model_path=args.model
         )
         
-        if args.force:
-            logging.info("强制更新知识库...")
-            success = mk_faiss.update_knowledge()
-            if success:
-                logging.info("知识库强制更新完成")
-            else:
-                logging.error("知识库强制更新失败")
+        # 直接更新知识库，无需条件判断
+        logging.info("更新知识库...")
+        success = mk_faiss.update_knowledge()
+        if success:
+            logging.info("知识库更新完成")
         else:
-            success = mk_faiss.check_and_update_if_needed()
-            if success:
-                logging.info("知识库已更新")
-            else:
-                logging.info("知识库无需更新")
+            logging.error("知识库更新失败")
                 
         vectorstore = mk_faiss.get_vectorstore()
         logging.info("向量数据库测试成功")

@@ -104,4 +104,5 @@ class ASRhelper:
 
 if __name__ == '__main__':
     assistant = ASRhelper()
-    assistant.main()
+    result=assistant.main()
+    print(result)

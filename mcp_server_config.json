@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "netease_music": {
+      "isActive": true,
+      "command": "python3",
+      "args": ["playmusic.py"]
+    },"web_search": {
+  "isActive": true,
+  "command": "python3",
+  "args": ["search.py"]
+}
+
+    }
+}

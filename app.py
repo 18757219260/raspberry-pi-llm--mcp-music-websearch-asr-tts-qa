@@ -1,11 +1,11 @@
 import sys
 import asyncio
 import time
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QTextEdit, QFrame, QScrollArea,
-                           QShortcut, QPushButton, QFileDialog)
-from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSignal, QObject, QEvent
-from PyQt5.QtGui import QFont, QPalette, QColor, QKeySequence, QIcon, QPixmap
+                           QPushButton, QFileDialog)
+from PySide6.QtCore import Qt, QSize, QTimer, Signal, QObject, QEvent
+from PySide6.QtGui import QFont, QPalette, QColor, QKeySequence, QIcon, QPixmap, QShortcut
 import pyaudio
 import webrtcvad
 from aip import AipSpeech
@@ -37,12 +37,6 @@ import nest_asyncio
 from openai import OpenAI
 import random
 nest_asyncio.apply()
-
-# ==================================
-# 系统配置
-# ==================================
-# 树莓派模式配置
-IS_COMPUTER_MODE = False  # 设置为False表示树莓派模式(实时说话)
 
 # ==================================
 # 对话管理器类 (从conversation.py)
@@ -159,16 +153,15 @@ class TTSStreamer:
         self._last_audio_time = 0
 
     def preprocess_text(self, text):
-        """预处理文本，替换标点符号"""
+        """预处理文本，保留更多原始标点结构"""
+        # 只替换中文标点为对应的英文标点，不全部替换为逗号
         text = text.replace("，", ",")
-        text = text.replace("。", ",")
+        text = text.replace("。", ".")  # 保留句号的结构
         text = text.replace("、", ",")
-        text = text.replace("；", ",")
-        text = text.replace("：", ",")
-        text = text.replace("*", ',')
-        text = text.replace(".", ',')
-        text = text.replace("#", ',')
-        text = text.replace("？", ',')
+        text = text.replace("；", ";")  # 保留分号
+        text = text.replace("：", ":")  # 保留冒号
+        text = text.replace("？", "?")  # 保留问号
+        text = text.replace("！", "!")  # 保留感叹号
         text = re.sub(r'[\x00-\x1F\x7F]', '', text)
         return text
 
@@ -259,7 +252,7 @@ class TTSStreamer:
                             
                             # 优化延迟策略 - 更准确的估算
                             text_length = len(text)
-                            base_delay = 0.15  
+                            base_delay = 0.18  
                             min_delay = 0.8    
                             max_delay = 8.0    
                             
@@ -304,31 +297,43 @@ class TTSStreamer:
             self.speech_task = None
 
     async def speak_text(self, text, wait=False):
-        """流式处理文本"""
+        """流式处理文本，使用更智能的句子分割"""
         text = self.preprocess_text(text)
         
-        # 简单分段，不要太复杂
+        # 智能分段 - 在自然断句点分割
         segments = []
-        max_length = 50  # 每段最大长度
+        # 根据句子结束标点（句号、问号、感叹号、分号）或较长的逗号分句进行分段
+        sentence_pattern = r'(?<=[.!?;])\s+|(?<=,)\s+(?=\S{5,})'
+        parts = re.split(sentence_pattern, text)
         
-        # 按逗号分割
-        parts = text.split(',')
-        current_segment = ""
+        max_length = 60  # 增加最大长度，允许更完整的句子
         
+        # 进一步处理过长的段落
         for part in parts:
-            if len(current_segment) + len(part) > max_length and current_segment:
-                segments.append(current_segment.strip())
-                current_segment = part
+            if len(part) <= max_length:
+                segments.append(part)
             else:
-                current_segment += part + ","
+                # 处理过长的段落，尝试在逗号处分割
+                comma_parts = part.split(',')
+                current_segment = ""
                 
-        if current_segment:
-            segments.append(current_segment.strip())
-            
+                for comma_part in comma_parts:
+                    if len(current_segment) + len(comma_part) > max_length and current_segment:
+                        segments.append(current_segment.strip())
+                        current_segment = comma_part
+                    else:
+                        if current_segment:
+                            current_segment += ", " + comma_part
+                        else:
+                            current_segment = comma_part
+                
+                if current_segment:
+                    segments.append(current_segment.strip())
+        
         # 如果没有分段，就作为整体
         if not segments:
             segments = [text]
-            
+        
         # 确保处理器运行
         await self.start_speech_processor()
         
@@ -336,7 +341,7 @@ class TTSStreamer:
         for segment in segments:
             if segment.strip():
                 await self.speech_queue.put(segment)
-                
+        
         # 如果需要等待完成
         if wait:
             await self.wait_until_done()
@@ -479,65 +484,6 @@ class ASRHelper:
             logging.info("没有录到语音")
             return None
     
-    async def press_to_talk(self, callback=None):
-        """按住说话模式（电脑版）"""
-        self.initialize_audio()
-        self.is_recording = True
-        
-        audio_input = []
-        start_time = time.time()
-        
-        # 状态回调
-        if callback:
-            callback("listening")
-
-        try:
-            while self.is_recording:
-                data = self.stream.read(self.CHUNK, exception_on_overflow=False)
-                audio_input.append(data)
-                
-                # 让出控制权给主事件循环
-                await asyncio.sleep(0.01)
-                
-                if (time.time() - start_time) >= self.MAX_RECORD_SECONDS:
-                    logging.info("达到最大录音时间")
-                    break
-                    
-        except Exception as e:
-            logging.error(f"录音出错: {e}")
-            if callback:
-                callback("error")
-            return None
-            
-        finally:
-            self.is_recording = False
-            
-        if len(audio_input) < 10:  # 太短的录音可能是误触
-            logging.info("录音太短，忽略")
-            return None
-            
-        if callback:
-            callback("processing")
-            
-        if audio_input:
-            audio_data = b"".join(audio_input)
-            logging.info(f"上传 {len(audio_data)} 个字节进行识别")
-            
-            result = await asyncio.to_thread(
-                self.client.asr, audio_data, 'pcm', self.RATE, {'dev_pid': 1537}
-            )
-            
-            if result['err_no'] == 0:
-                recognized_text = result['result'][0]
-                logging.info(f"识别结果: {recognized_text}")
-                return recognized_text
-            else:
-                logging.error(f"识别失败: {result['err_msg']}, 错误码: {result['err_no']}")
-                return None
-        else:
-            logging.info("没有录到语音")
-            return None
-    
     def stop_recording(self):
         """停止录音"""
         self.is_recording = False
@@ -558,10 +504,10 @@ class LlamaCppEmbeddings(Embeddings):
 class KnowledgeQA:
     def __init__(
         self,
-        faiss_index_path="/home/wuye/vscode/raspberrypi_5/faiss_index",
+        faiss_index_path="faiss_index",
         temperature=0.3,
         k_documents=3,
-        embedding_model_path="/home/wuye/vscode/raspberrypi_5/text2vec_base_chinese_q8.gguf",
+        embedding_model_path="model/text2vec_base_chinese_q8.gguf",
         conversation_manager=None
     ):
         self.faiss_index_path = faiss_index_path
@@ -622,7 +568,7 @@ class KnowledgeQA:
             yield result
             return
         
-        query = "你是一个甘薯专家，请你以说话的标准回答，请你根据参考内容回答，回答输出为一段，回答内容简洁，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
+        query = "你是一个甘薯专家，请你以说话的标准回答，请你根据参考内容回答，回答输出为一段，回答内容简洁，如果参考内容中没有任何相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
         
         # 构建包含上下文的提示
         doc_context = "\n\n".join([d.page_content for d in docs])
@@ -677,12 +623,12 @@ class MessageBubble(QWidget):
         self._msg_label = None
 
         # 头像路径
-        self.avatar_path = "/home/wuye/vscode/raspberrypi_5/rasoberry/guzz.png"
-        self.robot_path = "/home/wuye/vscode/raspberrypi_5/rasoberry/sweetpotato.jpg"
+        self.avatar_path = "guzz.png"
+        self.robot_path = "sweetpotato.jpg"
 
         # 为7寸屏幕优化布局
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setContentsMargins(0, 12, 0, 12)  
         layout.setSpacing(15)
 
         avatar_size = 60
@@ -690,33 +636,32 @@ class MessageBubble(QWidget):
         avatar_label.setFixedSize(avatar_size, avatar_size)
         avatar_label.setAlignment(Qt.AlignCenter)
         avatar_label.setStyleSheet(f"""
-            border-radius: {avatar_size//2}px;
+            border-radius: 5px;
             background-color: #DDDDDD;
+            border: 3px solid {"#4CAF50" if is_user else "#FF9800"};
         """)
 
         # 加载头像图像
         avatar_path = self.avatar_path if is_user else self.robot_path
         pixmap = QPixmap(avatar_path)
-        if not pixmap.isNull():
-            scaled = pixmap.scaled(
-                avatar_size, avatar_size,
-                Qt.KeepAspectRatioByExpanding,
-                Qt.SmoothTransformation
-            )
-            avatar_label.setPixmap(scaled)
-        else:
-            avatar_label.setText("我" if is_user else "薯")
 
-        # 消息文本
+        scaled = pixmap.scaled(
+            avatar_size, avatar_size,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation
+        )
+        avatar_label.setPixmap(scaled)
+
         self._msg_label = QLabel(text)
-        self._msg_label.setFont(QFont("微软雅黑", 14))
+        self._msg_label.setFont(QFont("微软雅黑", 16))  # 增大字体
         self._msg_label.setWordWrap(True)
-        self._msg_label.setMaximumWidth(360)
+        self._msg_label.setMaximumWidth(780)  # 增加最大宽度
         self._msg_label.setStyleSheet(f"""
             background-color: {"#A4E75A" if is_user else "#FFFFFF"};
             color: #303030;
-            border-radius: 12px;
-            padding: 12px;
+            border-radius: 20px;
+            padding: 15px 20px;
+            border: 2px solid {"#8BC34A" if is_user else "#E0E0E0"};
         """)
 
         # 按消息来源设置左右布局
@@ -729,7 +674,7 @@ class MessageBubble(QWidget):
             layout.addWidget(self._msg_label)
             layout.addStretch()
 
-        self.setMinimumHeight(60)
+        self.setMinimumHeight(80)
 
     @property
     def msg_label(self):
@@ -751,18 +696,26 @@ class ChatArea(QScrollArea):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
-        # 给滚动条设置样式
+        # 美化滚动条样式
         self.setStyleSheet("""
+            QScrollArea {
+                background-color: #F5F5F5;
+                border: none;
+            }
             QScrollBar:vertical {
                 border: none;
-                background: rgba(0, 0, 0, 0.1);
-                width: 8px;
+                background: rgba(0, 0, 0, 0.05);
+                width: 10px;
                 margin: 0px;
+                border-radius: 5px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(0, 0, 0, 0.2);
+                background: rgba(0, 0, 0, 0.15);
                 min-height: 30px;
-                border-radius: 4px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(0, 0, 0, 0.25);
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
@@ -771,16 +724,39 @@ class ChatArea(QScrollArea):
         
         # 创建容器小部件
         self.container = QWidget()
-        self.container.setStyleSheet("background-color: #EDEDED;")
+        self.container.setStyleSheet("background-color: #F5F5F5;")
         
         # 创建垂直布局
         self.layout = QVBoxLayout(self.container)
         self.layout.setAlignment(Qt.AlignTop)
-        self.layout.setSpacing(16)  # 增加间距使界面更清爽
-        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.layout.setSpacing(20)  # 增加间距使界面更清爽
+        self.layout.setContentsMargins(20, 20, 20, 20)
         
         # 设置滚动区域的小部件
         self.setWidget(self.container)
+    
+
+    def smooth_scroll_to_bottom(self):
+        """更平滑地滚动到底部"""
+        scrollbar = self.verticalScrollBar()
+        current = scrollbar.value()
+        maximum = scrollbar.maximum()
+        
+        # 如果已经接近底部，直接跳到底部
+        if maximum - current < 100:
+            scrollbar.setValue(maximum)
+            return
+            
+        # 否则使用动画效果
+        steps = 5
+        step_size = (maximum - current) / steps
+        
+        for i in range(steps):
+            def scroll_step(idx=i):
+                new_val = min(current + (idx + 1) * step_size, maximum)
+                scrollbar.setValue(int(new_val))
+            
+            QTimer.singleShot(30 * (i + 1), scroll_step)
     
     def add_message(self, text, is_user=False):
         """添加新消息"""
@@ -806,7 +782,7 @@ class ChatArea(QScrollArea):
     
     def update_bubble_widths(self, width):
         """更新所有气泡的宽度"""
-        max_width = min(300, int(width * 0.65))  # 为小屏幕优化
+        max_width = min(800, int(width * 0.7))  
         for i in range(self.layout.count()):
             item = self.layout.itemAt(i)
             if item and item.widget():
@@ -818,20 +794,30 @@ class StatusIndicator(QWidget):
     """语音状态指示器"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(40)
+        self.setFixedHeight(50)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #FFFFFF;
+                border-bottom: 2px solid #E0E0E0;
+            }
+        """)
         
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(15, 0, 15, 0)
+        self.layout.setContentsMargins(20, 10, 20, 10)
         
         # 状态图标
         self.icon_label = QLabel()
-        self.icon_label.setFixedSize(20, 20)
-        self.icon_label.setStyleSheet("background-color: #5B89DB; border-radius: 10px;")
+        self.icon_label.setFixedSize(24, 24)
+        self.icon_label.setStyleSheet("""
+            background-color: #5B89DB; 
+            border-radius: 12px;
+            border: 2px solid white;
+        """)
         
         # 状态文本
-        self.text_label = QLabel("等待语音输入...")
-        self.text_label.setFont(QFont("微软雅黑", 12))
-        self.text_label.setStyleSheet("color: #606060;")
+        self.text_label = QLabel("正在初始化...")
+        self.text_label.setFont(QFont("微软雅黑", 14, QFont.Bold))
+        self.text_label.setStyleSheet("color: #333333;")
         
         self.layout.addWidget(self.icon_label)
         self.layout.addWidget(self.text_label)
@@ -843,275 +829,316 @@ class StatusIndicator(QWidget):
     def set_waiting(self):
         """设置等待状态"""
         self.text_label.setText("等待语音输入...")
-        self.icon_label.setStyleSheet("background-color: #5B89DB; border-radius: 10px;")
+        self.icon_label.setStyleSheet("""
+            background-color: #5B89DB; 
+            border-radius: 12px;
+            border: 2px solid white;
+        """)
         
     def set_listening(self):
         """设置监听状态"""
         self.text_label.setText("正在聆听...")
-        self.icon_label.setStyleSheet("background-color: #FF5252; border-radius: 10px;")
+        self.icon_label.setStyleSheet("""
+            background-color: #F44336; 
+            border-radius: 12px;
+            border: 2px solid white;
+        """)
         
     def set_processing(self):
         """设置处理状态"""
         self.text_label.setText("正在思考...")
-        self.icon_label.setStyleSheet("background-color: #FFC107; border-radius: 10px;")
+        self.icon_label.setStyleSheet("""
+            background-color: #FFC107; 
+            border-radius: 12px;
+            border: 2px solid white;
+        """)
         
     def set_answering(self):
+        '''设置回答状态'''
+        self.text_label.setText("正在播放欢迎语...")
+        self.icon_label.setStyleSheet("""
+            background-color: #E91E63; 
+            border-radius: 12px;
+            border: 2px solid white;
+        """)
+        
+    def set_answerd(self):
         """设置回答状态"""
-        self.text_label.setText("已回答，请继续提问...")
-        self.icon_label.setStyleSheet("background-color: #4CAF50; border-radius: 10px;")
+        self.text_label.setText("正在回答中...")
+        self.icon_label.setStyleSheet("""
+            background-color: #4CAF50; 
+            border-radius: 12px;
+            border: 2px solid white;
+        """)
 
-    # ==================================
-    # 主应用类
-    # ==================================
+# ==================================
+# 主应用类
+# ==================================
 class SignalBridge(QObject):
     """信号桥接类，用于异步通信"""
-    status_changed = pyqtSignal(str)
-    add_user_message = pyqtSignal(str)
-    start_bot_message = pyqtSignal()
-    update_bot_message = pyqtSignal(str)
-    request_real_time_listening = pyqtSignal()
+    status_changed = Signal(str)
+    add_user_message = Signal(str)
+    start_bot_message = Signal()
+    update_bot_message = Signal(str)
+    request_real_time_listening = Signal()
+
 
 class SweetPotatoGUI(QMainWindow):
     def __init__(self, user_name="吴大王"):
         super().__init__()
         self.user_name = user_name
-        # self.user_avatar_path =  "/home/wuye/vscode/raspberrypi_5/rasoberry/guzz.jpg"# 用户头像路径
-        self.current_bot_bubble = None  # 当前的机器人消息气泡
+        self.current_bot_bubble = None
         
+        self.follow_up_prompts = [
+    "您还有什么问题吗？",
+    "您还有什么想问的？",
+    "您还想了解些什么？",
+    "还有其他关于甘薯的问题吗？",
+    "想成为吴家卓吗？",
+    "还有什么疑问呢",
+    "嘿嘿嘿你说呀？",
+    "太豆了你，赶紧说？"
+]
+   
+        
+
+
+
         # 初始化组件
         self.chat_area = ChatArea()
-        self.status_indicator = StatusIndicator() 
-        self.voice_btn = None
-        
-        # 初始化信号桥接
+        self.status_indicator = StatusIndicator()
+
+        # 信号桥接
         self.bridge = SignalBridge()
         self.bridge.status_changed.connect(self.update_status)
         self.bridge.add_user_message.connect(self.add_question)
         self.bridge.start_bot_message.connect(self.start_bot_message)
         self.bridge.update_bot_message.connect(self.update_bot_message)
         self.bridge.request_real_time_listening.connect(self.start_real_time_listening)
-        
-        # 初始化辅助类
+
+        # 辅助
         self.conversation_manager = ConversationManager(max_history=10)
         self.qa_model = KnowledgeQA(conversation_manager=self.conversation_manager)
         self.asr_helper = ASRHelper()
         self.tts_streamer = TTSStreamer()
-        
-        # 异步任务属性
+
+        # 异步属性
         self.current_tasks = []
         self.current_answer = ""
         self.is_processing = False
-        
-        # 初始化UI
+
+        # UI 与事件循环
         self.init_ui()
-        
-        # 启动事件循环
         self.setup_asyncio_event_loop()
-        
-        # 树莓派模式下自动开始监听
-        if not IS_COMPUTER_MODE:
-            QTimer.singleShot(500, self.auto_start_listening)
-    
+        # 播放欢迎并开始流程
+        self.add_task(self.play_welcome_and_listen())
+
     def init_ui(self):
-        # 设置窗口属性
         self.setWindowTitle("甘薯知识问答系统")
         self.showFullScreen()
         
-        # 创建主窗口部件
+        # 设置窗口背景
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #FAFAFA;
+            }
+        """)
+        
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 设置标题栏
+
+        # Header 区域 - 更美观的设计
         header = QWidget()
-        header.setStyleSheet("background-color: #FF7E1F;")  # 甘薯橙色
-        header.setFixedHeight(60)
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 0, 10, 0)
-        
-        # 标题左侧图标
-        icon_label = QLabel()
-        icon_label.setFixedSize(40, 40)
-        icon_label.setStyleSheet("""
-            background-color: white;
-            border-radius: 20px;
-            color: #FF7E1F;
-            font-weight: bold;
-            font-size: 18px;
+        header.setStyleSheet("""
+            QWidget {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #FF9800, stop:1 #FFA726);
+                border-bottom: 3px solid #F57C00;
+            }
         """)
-        icon_label.setAlignment(Qt.AlignCenter)
-        icon_label.setText("薯")
-        
-        # 标题文本
+        header.setFixedHeight(70)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 10, 20, 10)
+
+        # Logo 区域
+        logo_container = QWidget()
+        logo_container.setFixedSize(50, 50)
+        logo_container.setStyleSheet("""
+            background-color: white;
+            border-radius: 25px;
+            border: 3px solid #FFB74D;
+        """)
+        # logo_label = QLabel("🍠")
+        # logo_label.setAlignment(Qt.AlignCenter)
+        # logo_label.setFont(QFont("微软雅黑", 24))
+        # logo_label.setStyleSheet("background-color: transparent; border: none;")
+        # logo_layout = QHBoxLayout(logo_container)
+        # logo_layout.setContentsMargins(0, 0, 0, 0)
+        # logo_layout.addWidget(logo_label)
+
+        # 标题
         title_label = QLabel("甘薯知识助手")
-        title_label.setFont(QFont("微软雅黑", 18, QFont.Bold))
-        title_label.setStyleSheet("color: white;")
-        
-        # 用户信息区域
-        user_area = QWidget()
-        user_layout = QHBoxLayout(user_area)
-        user_layout.setSpacing(10)
-        user_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # # 用户头像
-        # self.user_avatar_label = QLabel()
-        # self.user_avatar_label.setFixedSize(60, 60)
-        # self.user_avatar_label.setStyleSheet("""
-        #     background-color: white;
-        #     border-radius: 20px;
-        #     border: 2px solid #FFFFFF;
-        # """)
-        # if self.user_avatar_path:
-        #     pixmap = QPixmap(self.user_avatar_path)
-        #     if not pixmap.isNull():
-        #         scaled_pixmap = pixmap.scaled(
-        #             60, 60,
-        #             Qt.KeepAspectRatio,
-        #             Qt.SmoothTransformation
-        #         )
-        #         self.user_avatar_label.setPixmap(scaled_pixmap)
-        # # self.user_avatar_label.setAlignment(Qt.AlignCenter)
-        # # self.user_avatar_label.setText("头像")
-        # # self.user_avatar_label.mousePressEvent = self.choose_avatar
-        
-        # # 用户名称标签
-        user_label = QLabel(self.user_name)
-        user_label.setFont(QFont("微软雅黑", 20, QFont.Bold))
-        user_label.setStyleSheet("color: white;")
+        title_label.setFont(QFont("微软雅黑", 22, QFont.Bold))
+        title_label.setAlignment(Qt.AlignVCenter)
+        title_label.setStyleSheet("""
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            background-color: transparent;
+            border: none;
+        """)
+
+        # 用户信息
+        user_container = QWidget()
+        user_container.setStyleSheet("""
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 20px;
+            padding: 5px 15px;
+        """)
+        user_label = QLabel(f"{self.user_name}")
+        user_label.setFont(QFont("微软雅黑", 16, QFont.Bold))
         user_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        
-        # user_layout.addWidget(self.user_avatar_label)
+        user_label.setStyleSheet("""
+            color: white;
+            background-color: transparent;
+            border: none;
+        """)
+        user_layout = QHBoxLayout(user_container)
+        user_layout.setContentsMargins(10, 5, 10, 5)
         user_layout.addWidget(user_label)
-        
-        header_layout.addWidget(icon_label)
+
+        header_layout.addWidget(logo_container)
         header_layout.addWidget(title_label)
         header_layout.addStretch(1)
-        header_layout.addWidget(user_area)
-        
-        # 底部语音状态栏
-        footer = QWidget()
-        footer.setFixedHeight(70 if IS_COMPUTER_MODE else 0)  # 树莓派模式不显示按钮
-        footer.setStyleSheet("background-color: #F8F8F8; border-top: 1px solid #DDD;")
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(15, 5, 15, 5)
-        
-        if IS_COMPUTER_MODE:
-            # 语音按钮（仅电脑模式）
-            self.voice_btn = QPushButton("按住 说话")
-            self.voice_btn.setFont(QFont("微软雅黑", 14))
-            self.voice_btn.setFixedHeight(50)
-            self.voice_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #FF7E1F;
-                    color: white;
-                    border-radius: 25px;
-                    padding: 5px 20px;
-                }
-                QPushButton:pressed {
-                    background-color: #D45E00;
-                }
-            """)
-            
-            # 设置按钮行为
-            self.voice_btn.installEventFilter(self)
-            
-            footer_layout.addStretch()
-            footer_layout.addWidget(self.voice_btn)
-            footer_layout.addStretch()
-        
-        # 添加所有组件到主布局
+        header_layout.addWidget(user_container)
+
         main_layout.addWidget(header)
         main_layout.addWidget(self.status_indicator)
         main_layout.addWidget(self.chat_area, 1)
-        main_layout.addWidget(footer)
-        
-        # 设置ESC键退出
+
+        # ESC 退出
         self.exit_shortcut = QShortcut(QKeySequence("Esc"), self)
         self.exit_shortcut.activated.connect(self.close)
-        
-        # 添加欢迎消息
+
+    def setup_asyncio_event_loop(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._process_asyncio_events)
+        self.timer.start(10)
+
+    def _process_asyncio_events(self):
+        self.loop.call_soon(lambda: None)
+        self.loop.stop()
+        self.loop.run_forever()
+
+    def add_task(self, coro):
+        task = self.loop.create_task(coro)
+        self.current_tasks.append(task)
+        task.add_done_callback(lambda t: self.current_tasks.remove(t) if t in self.current_tasks else None)
+        return task
+
+    async def play_welcome_and_listen(self):
         welcome_msg = f"您好，{self.user_name}！我是甘薯知识助手，请通过语音向我提问关于甘薯的问题。"
+        # 显示文字
         self.chat_area.add_message(welcome_msg)
+        # 切到"回答中"状态
+        self.status_indicator.set_answering()
+        # 播报并等待完成
+        await self.tts_streamer.speak_text(welcome_msg, wait=True)
         
-    # def choose_avatar(self, event):
-    #     """选择用户头像"""
-    #     file_path, _ = QFileDialog.getOpenFileName(
-    #         self,
-    #         "选择头像",
-    #         "",
-    #         "图片文件 (*.jpg *.jpeg *.png)"
-    #     )
+        # 语音提示（不显示在屏幕上）
+        await self.tts_streamer.speak_text("您有什么想问的吗？", wait=True)
         
-    #     if file_path:
-    #         self.user_avatar_path = file_path
-    #         # 加载并设置头像
-    #         pixmap = QPixmap(file_path)
-    #         if not pixmap.isNull():
-    #             scaled_pixmap = pixmap.scaled(
-    #                 36, 36, 
-    #                 Qt.KeepAspectRatio, 
-    #                 Qt.SmoothTransformation
-    #             )
-    #             self.user_avatar_label.setPixmap(scaled_pixmap)
-    #             self.user_avatar_label.setText("")  # 清除原有文本
-    
-    def auto_start_listening(self):
-        """自动开始实时聆听 (树莓派模式)"""
+        # 设置为"已回答"状态
+        self.status_indicator.set_answerd()
+        # 切到"聆听"状态并启动连续聆听
         self.status_indicator.set_listening()
+        await asyncio.sleep(0.2)
         self.add_task(self.continuous_listening_task())
-    
+
     async def continuous_listening_task(self):
-        """连续实时聆听任务（树莓派模式）"""
-        while not IS_COMPUTER_MODE:  # 只在树莓派模式下执行
+        while True:
             try:
-                # 确保TTS完全结束后再开始聆听
+                # 保证 TTS 完毕
                 if self.tts_streamer.is_speaking:
                     await self.tts_streamer.wait_until_done()
-                    await asyncio.sleep(0.5)  # 额外等待确保语音完全结束
-                
-                # 清理音频缓冲
+                    await asyncio.sleep(0.1)
                 await self.clear_audio_buffer()
-                
+
                 # 语音识别
                 text = await self.asr_helper.real_time_recognition(
                     callback=lambda status: self.bridge.status_changed.emit(status)
                 )
-                
-                if text and not self.is_processing:  # 防止重复处理
-                    # 设置处理状态
+
+                if text and not self.is_processing:
                     self.is_processing = True
-                    
-                    # 添加用户问题
+                    # 新问题，切到"处理"状态
                     self.bridge.add_user_message.emit(text)
-                    
+                    self.status_indicator.set_processing()
+
                     # 开始机器人消息
                     self.bridge.start_bot_message.emit()
-                    
-                    # 重置当前回答
                     self.current_answer = ""
                     
-                    # 流式处理回答
+                    # 文本缓冲区
+                    text_buffer = ""
+                    # 计算缓冲区中标点符号的数量
+                    punctuation_count = 0
+                    # 设置标点符号阈值，达到这个数量才发送
+                    punctuation_threshold = 3  # 可以调整为3或4
+                    
+                    # 设置为回答状态
+                    self.status_indicator.set_answerd()
+
+                    # 流式生成回答并同步进行语音合成
                     async for chunk in self.qa_model.ask_stream(text):
                         self.current_answer += chunk
                         self.bridge.update_bot_message.emit(self.current_answer)
+                        
+                        # 将新块添加到缓冲区
+                        text_buffer += chunk
+                        
+                        # 计算当前块中的标点符号数量
+                        new_punctuations = len(re.findall(r'[。，,.!?！？;；]', chunk))
+                        punctuation_count += new_punctuations
+                        
+                        # 条件：达到标点符号阈值或缓冲区足够长
+                        if (punctuation_count >= punctuation_threshold and len(text_buffer) >= 15) or len(text_buffer) > 80:
+                            if text_buffer.strip():
+                                await self.tts_streamer.speak_text(text_buffer, wait=False)
+                            
+                            # 重置缓冲区和计数器
+                            text_buffer = ""
+                            punctuation_count = 0
+                        
+                        # 给UI渲染的时间
+                        await asyncio.sleep(0.01)
                     
-                    # 语音合成
-                    await self.tts_streamer.speak_text(self.current_answer, wait=True)
+                    # 处理剩余的文本缓冲区
+                    if text_buffer.strip():
+                        await self.tts_streamer.speak_text(text_buffer, wait=False)
                     
+                    # 等待所有语音播放完成
+                    await self.tts_streamer.wait_until_done()
+                    
+                    # 语音提示继续对话（不显示在屏幕上）
+                    follow_up = random.choice(self.follow_up_prompts)
+                    await self.tts_streamer.speak_text(follow_up, wait=True)
+                    
+                    # 播报结束，切到"聆听"
+                    self.status_indicator.set_listening()
                     self.is_processing = False
-                
-                # 短暂暂停，防止CPU占用过高
+
                 await asyncio.sleep(0.5)
-                
             except Exception as e:
                 logging.error(f"连续聆听过程中出错: {e}")
                 self.is_processing = False
-                await asyncio.sleep(1)  # 出错后暂停一会再继续
-    
+                await asyncio.sleep(1)
+
     async def clear_audio_buffer(self):
-        """清理音频缓冲区"""
         try:
             if hasattr(self.asr_helper, 'stream') and self.asr_helper.stream:
                 await asyncio.sleep(0.1)
@@ -1120,47 +1147,8 @@ class SweetPotatoGUI(QMainWindow):
                 logging.info("音频缓冲区已清理")
         except Exception as e:
             logging.warning(f"清理音频缓冲区时出错: {e}")
-    
-    def setup_asyncio_event_loop(self):
-        """设置异步事件循环"""
-        # 创建asyncio事件循环
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        
-        # 创建一个定时器来处理asyncio事件
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._process_asyncio_events)
-        self.timer.start(10)  
-        
-    def _process_asyncio_events(self):
-        """处理asyncio事件循环中的待处理事件"""
-        # 仅处理所有当前待处理的回调，不会再次调用run_forever
-        self.loop.call_soon(lambda: None)  
-        self.loop.stop()
-        self.loop.run_forever()
-            
-    def add_task(self, coro):
-        """添加异步任务"""
-        # 使用loop.create_task而不是asyncio.create_task
-        task = self.loop.create_task(coro)
-        self.current_tasks.append(task)
-        task.add_done_callback(lambda t: self.current_tasks.remove(t) if t in self.current_tasks else None)
-        return task
-    
-    def eventFilter(self, obj, event):
-        """事件过滤器，处理按钮按下和释放事件"""
-        if obj == self.voice_btn and IS_COMPUTER_MODE:
-            # 按住说话模式（仅电脑模式）
-            if event.type() == QEvent.MouseButtonPress:
-                if not self.is_processing:
-                    self.start_press_to_talk()
-            elif event.type() == QEvent.MouseButtonRelease:
-                self.stop_recording()
-                            
-        return super().eventFilter(obj, event)
-    
+
     def update_status(self, status):
-        """更新状态指示器"""
         if status == "waiting":
             self.status_indicator.set_waiting()
         elif status == "listening":
@@ -1168,109 +1156,57 @@ class SweetPotatoGUI(QMainWindow):
         elif status == "processing":
             self.status_indicator.set_processing()
         elif status == "answering":
-            self.status_indicator.set_answering()
-    
+            self.status_indicator.set_answerd()
+
     def add_question(self, text):
-        """添加用户问题"""
-        if text and self.chat_area:
-            self.chat_area.add_message(text, is_user=True)
-            self.status_indicator.set_processing()
-    
+        self.chat_area.add_message(text, is_user=True)
+        self.status_indicator.set_processing()
+
     def start_bot_message(self):
-        """开始机器人消息"""
         self.current_bot_bubble = self.chat_area.add_message("", is_user=False)
-    
+        # 在 start_bot_message 中加动画控制
+        self.loading_dots_timer = QTimer()
+        self.loading_dots = ""
+        self.loading_dots_timer.timeout.connect(self.animate_loading_dots)
+        self.loading_dots_timer.start(500)  # 每 500ms 更新一次
+
+    def animate_loading_dots(self):
+        self.loading_dots = "." * ((len(self.loading_dots) % 3) + 1)
+        if self.current_bot_bubble:
+            self.current_bot_bubble.update_text(f"正在思考中{self.loading_dots}")
     def update_bot_message(self, text):
         """更新机器人消息"""
+        if self.loading_dots_timer.isActive():
+            self.loading_dots_timer.stop()
         if self.current_bot_bubble:
             self.current_bot_bubble.update_text(text)
-            self.chat_area.scrollToBottom()
-    
-    def start_press_to_talk(self):
-        """开始按住说话模式"""
-        if self.is_processing:
-            return
             
-        self.status_indicator.set_listening()
-        self.add_task(self.press_to_talk_task())
-    
+            # 使用改进的平滑滚动
+            QTimer.singleShot(10, lambda: self.chat_area.smooth_scroll_to_bottom())
+
     def start_real_time_listening(self):
-        """开始实时聆听模式"""
         if self.is_processing:
             return
-            
         self.status_indicator.set_listening()
-        self.add_task(self.real_time_listening_task())
-    
+        self.add_task(self.continuous_listening_task())
+
     def stop_recording(self):
-        """停止录音"""
         self.asr_helper.stop_recording()
-    
-    async def press_to_talk_task(self):
-        """按住说话任务"""
-        try:
-            self.is_processing = True
-            
-            # 语音识别
-            text = await self.asr_helper.press_to_talk(
-                callback=lambda status: self.bridge.status_changed.emit(status)
-            )
-            
-            if not text:
-                self.bridge.status_changed.emit("waiting")
-                self.is_processing = False
-                return
-                
-            # 添加用户问题
-            self.bridge.add_user_message.emit(text)
-            
-            # 开始机器人消息
-            self.bridge.start_bot_message.emit()
-            
-            # 重置当前回答
-            self.current_answer = ""
-            
-            # 流式处理回答
-            async for chunk in self.qa_model.ask_stream(text):
-                self.current_answer += chunk
-                self.bridge.update_bot_message.emit(self.current_answer)
-            
-            # 语音合成
-            await self.tts_streamer.speak_text(self.current_answer)
-            
-            self.bridge.status_changed.emit("answering")
-            
-        except Exception as e:
-            logging.error(f"处理语音输入出错: {e}")
-        finally:
-            self.is_processing = False
-    
+
     def resizeEvent(self, event):
-        """窗口大小改变时重新调整消息气泡宽度"""
         super().resizeEvent(event)
-        # 添加安全检查以防止崩溃
         if hasattr(self, 'chat_area') and self.chat_area:
             self.chat_area.update_bubble_widths(self.width())
-            
+
     def closeEvent(self, event):
-        """窗口关闭时清理资源"""
-        # 取消所有任务
         for task in self.current_tasks:
             task.cancel()
-            
-        # 关闭语音识别和合成资源
         self.asr_helper.close_audio()
-        
-        # 停止asyncio事件循环处理
         self.timer.stop()
-        
-        # 保存会话数据
         loop = asyncio.get_event_loop()
         loop.run_until_complete(self.conversation_manager.save_tracking_data())
-        
         super().closeEvent(event)
 
-    # 主程序入口
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     

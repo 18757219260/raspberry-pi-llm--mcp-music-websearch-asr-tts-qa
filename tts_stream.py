@@ -1,10 +1,15 @@
 import asyncio
+from contextlib import AsyncExitStack
 import edge_tts
 import subprocess
 import io
 import logging
 import re
 import time
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
+import json
 
 
 class TTSStreamer:
@@ -223,3 +228,70 @@ class TTSStreamer:
         """清理资源"""
         await self.stop_speech_processor()
         await self.stop_player()
+
+    # 添加MCP相关功能
+    async def connect_to_mcp(self, config_file="mcp_server_config.json"):
+        """连接到MCP服务器"""
+        try:
+            self.exit_stack = AsyncExitStack()
+            self.sessions = {}
+            self.tools = []
+            
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                
+            conf = config["mcpServers"]
+            for key in conf.keys():
+                v = conf[key]
+                session = None
+                if "url" in v and v['isActive'] and "type" in v and v["type"] == "sse":
+                    server_url = v['url']
+                    sse_transport = await self.exit_stack.enter_async_context(sse_client(server_url))
+                    write, read = sse_transport
+                    session = await self.exit_stack.enter_async_context(ClientSession(write, read))
+                elif "command" in v and v['isActive']:
+                    command = v['command']
+                    args = v['args']
+                    server_params = StdioServerParameters(command=command, args=args, env=None)
+                    stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
+                    stdio1, write1 = stdio_transport
+                    session = await self.exit_stack.enter_async_context(ClientSession(stdio1, write1))
+                
+                if session:
+                    await session.initialize()
+                    response = await session.list_tools()
+                    tools = response.tools
+                    for tool in tools:
+                        self.sessions[tool.name] = session
+                    self.tools += tools
+                    
+            logging.info("MCP服务已连接")
+            return True
+        except Exception as e:
+            logging.error(f"连接MCP服务失败: {e}")
+            return False
+            
+    async def play_music(self, song_name):
+        """使用MCP播放音乐"""
+        if not hasattr(self, 'sessions') or 'play_music' not in self.sessions:
+            logging.error("MCP音乐服务未连接")
+            return "音乐服务未连接"
+            
+        try:
+            result = await self.sessions['play_music'].call_tool("play_music", {"song_name": song_name})
+            return result.content[0].text
+        except Exception as e:
+            logging.error(f"播放音乐失败: {e}")
+            return f"播放音乐失败: {str(e)}"
+    
+    async def stop_music(self):
+        """停止音乐播放"""
+        if not hasattr(self, 'sessions') or 'stopplay' not in self.sessions:
+            return "音乐服务未连接"
+            
+        try:
+            result = await self.sessions['stopplay'].call_tool("stopplay", {})
+            return result.content[0].text
+        except Exception as e:
+            logging.error(f"停止音乐失败: {e}")
+            return f"停止音乐失败: {str(e)}"
