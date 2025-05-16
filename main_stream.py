@@ -284,7 +284,7 @@ class SweetPotatoChatbox:
         logging.info(f"🎵 用户音乐偏好选择: {user_choice}")
         
         # 解析用户选择
-        if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完","是的","没错","好","好的","继续","接着","听","放","歌"]):
+        if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完","是的","没错","好","好的","接着","听","放"]):
             return "wait"
         elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在","提问","快","推进"]):
             return "immediate"

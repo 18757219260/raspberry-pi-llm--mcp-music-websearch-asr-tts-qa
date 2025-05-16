@@ -1,6 +1,12 @@
 import sys
 import asyncio
 import time
+import re
+import json
+import random
+from datetime import datetime
+from collections import deque
+import logging
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QTextEdit, QFrame, QScrollArea,
                            QPushButton, QFileDialog)
@@ -12,11 +18,21 @@ from aip import AipSpeech
 import edge_tts
 import io
 import subprocess
-import logging
-import re
-import json
-from datetime import datetime
-from collections import deque
+
+# 百度ASR API配置
+APP_ID = '118613302'
+API_KEY = '7hSl10mvmtaCndZoab0S3BXQ' 
+SECRET_KEY = 'Fv10TxiFLmWb4UTAdLeA2eaTIE56QtkW'
+
+# QA模型所需导入
+from langchain_community.vectorstores import FAISS
+from langchain_core.embeddings import Embeddings
+import nest_asyncio
+from openai import OpenAI, AsyncOpenAI
+import nest_asyncio
+from qwen_agent.agents import Assistant
+import random
+nest_asyncio.apply()
 
 # 配置日志
 logging.basicConfig(
@@ -24,19 +40,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.FileHandler("chat.log"), logging.StreamHandler()]
 )
-
-# 百度ASR API配置
-APP_ID = ''
-API_KEY = '' 
-SECRET_KEY = ''
-
-# QA模型所需导入
-from langchain_community.vectorstores import FAISS
-from langchain_core.embeddings import Embeddings
-import nest_asyncio
-from openai import OpenAI
-import random
-nest_asyncio.apply()
 
 # ==================================
 # 对话管理器类 (从conversation.py)
@@ -111,8 +114,8 @@ class ConversationManager:
         recent_conversations = list(self.conversation_history)[-max_context:]
         context = []
         for conv in recent_conversations:
-            context.append(f"问题: {conv['question']}")
-            context.append(f"回答: {conv['answer']}")
+            context.append(f"qustion: {conv['question']}")
+            context.append(f"answer: {conv['answer']}")
         return "\n".join(context)
     
     async def save_tracking_data(self):
@@ -151,6 +154,9 @@ class TTSStreamer:
         self._playback_complete = asyncio.Event()
         self._playback_complete.set()  # Initially set
         self._last_audio_time = 0
+        self.exit_stack = None
+        self.sessions = {}
+        self.tools = []
 
     def preprocess_text(self, text):
         """预处理文本，保留更多原始标点结构"""
@@ -362,6 +368,79 @@ class TTSStreamer:
         """清理资源"""
         await self.stop_speech_processor()
         await self.stop_player()
+        
+    # 添加MCP相关功能
+    async def connect_to_mcp(self, config_file="mcp_server_config.json"):
+        """连接到MCP服务器"""
+        try:
+            from mcp.server.fastmcp import FastMCP
+            from contextlib import AsyncExitStack
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from mcp.client.sse import sse_client
+            
+            self.exit_stack = AsyncExitStack()
+            self.sessions = {}
+            self.tools = []
+            
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                
+            conf = config["mcpServers"]
+            for key in conf.keys():
+                v = conf[key]
+                session = None
+                if "url" in v and v['isActive'] and "type" in v and v["type"] == "sse":
+                    server_url = v['url']
+                    sse_transport = await self.exit_stack.enter_async_context(sse_client(server_url))
+                    write, read = sse_transport
+                    session = await self.exit_stack.enter_async_context(ClientSession(write, read))
+                elif "command" in v and v['isActive']:
+                    command = v['command']
+                    args = v['args']
+                    server_params = StdioServerParameters(command=command, args=args, env=None)
+                    stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
+                    stdio1, write1 = stdio_transport
+                    session = await self.exit_stack.enter_async_context(ClientSession(stdio1, write1))
+                
+                if session:
+                    await session.initialize()
+                    response = await session.list_tools()
+                    tools = response.tools
+                    for tool in tools:
+                        self.sessions[tool.name] = session
+                    self.tools += tools
+                    
+            logging.info("MCP服务已连接")
+            return True
+        except Exception as e:
+            logging.error(f"连接MCP服务失败: {e}")
+            return False
+            
+    async def play_music(self, song_name):
+        """使用MCP播放音乐"""
+        if not hasattr(self, 'sessions') or 'play_music' not in self.sessions:
+            logging.error("MCP音乐服务未连接")
+            return "音乐服务未连接"
+            
+        try:
+            result = await self.sessions['play_music'].call_tool("play_music", {"song_name": song_name})
+            return result.content[0].text
+        except Exception as e:
+            logging.error(f"播放音乐失败: {e}")
+            return f"播放音乐失败: {str(e)}"
+    
+    async def stop_music(self):
+        """停止音乐播放"""
+        if not hasattr(self, 'sessions') or 'stopplay' not in self.sessions:
+            return "音乐服务未连接"
+            
+        try:
+            result = await self.sessions['stopplay'].call_tool("stopplay", {})
+            return result.content[0].text
+        except Exception as e:
+            logging.error(f"停止音乐失败: {e}")
+            return f"停止音乐失败: {str(e)}"
 
 # ==================================
 # 语音识别类 (从asr.py)
@@ -489,7 +568,7 @@ class ASRHelper:
         self.is_recording = False
 
 # ==================================
-# 知识问答类 (从qa_model_easy.py)
+# 知识问答类 (扩展自qa_model_easy.py)
 # ==================================
 class LlamaCppEmbeddings(Embeddings):
     """自定义嵌入类，使用 llama.cpp 加载 GGUF 模型生成嵌入"""
@@ -507,8 +586,12 @@ class KnowledgeQA:
         faiss_index_path="faiss_index",
         temperature=0.3,
         k_documents=3,
-        embedding_model_path="model/text2vec_base_chinese_q8.gguf",
-        conversation_manager=None
+        embedding_model_path="/home/wuye/vscode/raspberrypi_5/rasoberry/text2vec_base_chinese_q8.gguf",
+        conversation_manager=None,
+        model_name="qwen-turbo-latest",
+        api_key='sk-4ee9cb3d8d704b23a04abbba3ab19020',
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        mcp_config_path="mcp_server_config.json"
     ):
         self.faiss_index_path = faiss_index_path
         self.k_documents = k_documents
@@ -526,18 +609,67 @@ class KnowledgeQA:
             "我里个豆阿，你问出这么难的问题我怎么会呢？"
         ]
         
+        # 初始化对话管理器
         self.conversation_manager = conversation_manager or ConversationManager()
+        self.model_name = model_name
+        self.api_key = api_key
+        self.base_url = base_url 
         
-        # 初始化Qwen API客户端
-        self.client = OpenAI(
-            api_key="",
-            base_url="")
+        # 初始化同步和异步的OpenAI客户端
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
         
         # 系统消息设置
         self.sys_msg = {
             "role": "system",                                                           
             "content": "回答简洁"
         }
+        
+        # MCP配置初始化
+        self.mcp_config_path = mcp_config_path
+        self.load_mcp_config()
+
+        # 仅保留最基本的Agent配置
+        self.llm_cfg = {
+            'model': self.model_name,
+            'model_server': 'dashscope',
+            'api_key': self.api_key,
+            'generate_cfg': {
+                'top_p': 0.8,
+                'thought_in_content': False,
+                'max_tokens': 400
+            }
+        }
+        
+        system_instruction = '''/no think'''
+        self.bot = Assistant(llm=self.llm_cfg,
+                          system_message=system_instruction,
+                          function_list=[self.config])
+        
+        # 添加音乐相关关键词分类
+        self.music_commands = {
+            "播放": ["播放", "放一首", "来一首", "听听", "我想听"],
+            "暂停": ["暂停", "停止", "先停下"],
+            "继续": ["继续", "恢复", "接着放","再来"],
+            "停止": ["停止", "关闭音乐", "我不听了"],
+            "下一首": ["下一首", "换一首", "播放下一首"],
+            "播放列表": ["播放列表", "歌单", "列表", "有什么歌"]
+        }
+        
+        # 添加搜索相关关键词
+        self.search_keywords = [
+            "搜索", "查找", "查询", "搜一下", "查一下", 
+            "查找", "搜索", "搜", "搜一搜","日历","帮我",
+            "帮我查", "帮我搜", "请搜索", "请查找"
+        ]
+        
+        # 添加网络信息相关关键词（需要实时信息的查询）
+        self.web_info_keywords = [
+            "最新", "最近", "现在", "今天", "目前", "当前",
+            "实时", "新闻", "热点", "天气", "股价", "比分",
+            "排行", "趋势", "动态", "更新", "价格","明天","后天","昨天","前天","大后天","大前天","前几天","后几天","之后","你知道吗"
+        ,"月","号","年","天","那天","几点","点钟"
+        ]
 
     def _load_vectorstore_with_retry(self, max_retries=3):
         for i in range(max_retries):
@@ -548,74 +680,345 @@ class KnowledgeQA:
                 time.sleep(1)
         raise RuntimeError("加载向量存储失败")
     
-    async def ask_stream(self, question, context=True):
-        start_time = time.time()
-        
-        context = ""
-        if context:
-            context = self.conversation_manager.get_conversation_context(max_context=3)
-        
-        docs = await asyncio.to_thread(
-            self.vectorstore.as_retriever(search_kwargs={"k": self.k_documents}).invoke,
-            question
-        )
+    def load_mcp_config(self):
+        """加载MCP服务器配置"""
+        try:
+            with open(self.mcp_config_path, "r") as f:
+                self.config = json.load(f)
+                logging.info(f"已加载MCP配置: {self.config}")
+        except Exception as e:
+            logging.error(f"加载MCP配置失败: {e}")
+            self.config = {"mcpServers": {}}
+    
+    async def call_tool(self, tool_name, tool_args):
+        """使用Qwen Agent调用MCP工具"""
+        try:
+     
+            tool_args_str = json.dumps(tool_args, ensure_ascii=False)
 
-        if not docs:
-            result = "未检索到相关内容。"
-   
-            response_time = time.time() - start_time
-            await self.conversation_manager.add_conversation_entry(question, result, response_time)
-            yield result
-            return
+ 
+            result = await asyncio.to_thread(self.bot._call_tool, tool_name, tool_args_str)
+            
+    
+            return result
+        except Exception as e:
+            logging.error(f"调用工具 {tool_name} 失败: {e}")
+            return {"error": f"调用工具失败: {str(e)}"}
+    
+    def detect_music_intent(self, question):
+        """检测音乐相关意图和具体命令"""
+        question_lower = question.lower()
         
-        query = "你是一个甘薯专家，请你以说话的标准回答，请你根据参考内容回答，回答输出为一段，回答内容简洁，如果参考内容中没有任何相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
+        # 首先检查特定的音乐控制命令（优先级更高）
+        specific_commands = {
+            "播放列表": ["播放列表", "显示播放列表", "当前播放列表", "歌单", "列表","我想听"],
+            "下一首": ["下一首", "换一首", "下首歌", "播放下一首","换一首歌"],
+            "上一首": ["上一首", "前一首", "播放上一首"],
+            "暂停": ["暂停", "停下", "先停"],
+            "继续": ["继续", "恢复", "接着放"],
+            "停止": ["停止播放", "关闭音乐", "不听了", "停止"]
+        }
         
-        # 构建包含上下文的提示
-        doc_context = "\n\n".join([d.page_content for d in docs])
+        # 检查特定命令
+        for command, keywords in specific_commands.items():
+            for keyword in keywords:
+                if keyword in question_lower:
+                    return {"command": command}
         
-        # 如果有对话历史，将其加入提示
-        if context:
-            prompt = f"对话历史:\n{context}\n\n参考内容:\n{doc_context}\n\n当前问题:\n{question}\n\n"#要求:{query}\n\n"
-        else:
-            prompt = f"参考内容:\n{doc_context}\n\n问题:\n{question}\n\n"#要求:{query}\n\n"
-        
-        # 使用Qwen API进行流式调用
-        messages = [
-            self.sys_msg,
-            {"role": "user", "content": prompt}
+        # 然后检查播放相关命令（使用更精确的匹配）
+        play_patterns = [
+            (r"播放\s*(.+)", "播放"),
+            (r"放一首\s*(.+)", "播放"),
+            (r"来一首\s*(.+)", "播放"),
+            (r"听听\s*(.+)", "播放"),
+            (r"我想听\s*(.+)", "播放"),
+            (r"点一首\s*(.+)","播放")
         ]
         
-        try:
-            stream = self.client.chat.completions.create(
-                model="qwen2.5-omni-7b",  
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=400,
-                stream=True
-            )
+        for pattern, command in play_patterns:
+            match = re.search(pattern, question)
+            if match:
+                song_name = match.group(1).strip()
+                # 过滤掉可能被误识别的词汇
+                if song_name and song_name not in ["下一首", "上一首", "列表", "播放列表"]:
+                    return {"command": command, "song_name": song_name}
+        
+        return None
+    
+    def detect_search_intent(self, question):
+        """检测搜索相关意图"""
+        question_lower = question.lower()
+        
+        # 直接的搜索命令检测
+        for keyword in self.search_keywords:
+            if keyword in question_lower:
+                # 提取搜索内容
+                patterns = [
+                    f"{keyword}(.+)",
+                    f"请{keyword}(.+)",
+                    f"帮我{keyword}(.+)",
+                    f"(.+){keyword}"
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, question_lower)
+                    if match:
+                        search_query = match.group(1).strip()
+                        # 清理查询词
+                        for kw in self.search_keywords:
+                            search_query = search_query.replace(kw, "").strip()
+                        
+                        if search_query:
+                            return {"command": "search", "query": search_query}
+                return {"command": "search", "query": question}
+        
+        # 检测是否需要网络实时信息
+        for keyword in self.web_info_keywords:
+            if keyword in question_lower:
+                return {"command": "search", "query": question}
+        
+        # 检测特定的网络查询模式
+        web_patterns = [
+            r"(.+)是什么",
+            r"什么是(.+)",
+            r"(.+)怎么样",
+            r"(.+)的价格",
+            r"(.+)新闻",
+            r"(.+)最新消息"
+        ]
+        
+        for pattern in web_patterns:
+            match = re.search(pattern, question)
+            if match:
+                # 检查是否包含网络相关词汇
+                if any(keyword in question_lower for keyword in self.web_info_keywords):
+                    return {"command": "search", "query": question}
+        
+        return None
+    
+    async def handle_search_command(self, intent):
+        """处理搜索相关命令"""
+        command = intent.get("command")
+        query = intent.get("query", "")
+        
+        if command == "search" and query:
+            # 调用正确的搜索工具名称
+            tool_result = await self.call_tool("web_search-web_search", {"query": query, "limit": 5})
             
-            full_response = ""
-            for chunk in stream:
-                if chunk.choices:
-                    content = chunk.choices[0].delta.content or ""
-                    full_response += content
-                    yield content
-            
-            response_time = time.time() - start_time
-            await self.conversation_manager.add_conversation_entry(question, full_response, response_time)
-            await self.conversation_manager.save_tracking_data()
+            try:
+                # 解析搜索结果
+                if isinstance(tool_result, str):
+                    search_data = json.loads(tool_result)
+                else:
+                    search_data = tool_result
+                
+                # 检查搜索状态
+                if search_data.get("status") == "error":
+                    return f"搜索失败：{search_data.get('message', '未知错误')}"
+                
+                # 处理成功的搜索结果
+                if search_data.get("status") == "success" and "results" in search_data:
+                    results = search_data["results"]
+                    if results:
+                        # 如果只有一个结果，直接返回内容
+                        if len(results) == 1:
+                            return results[0].get("content", "搜索结果为空")
+                        
+                        # 多个结果时格式化输出
+                        response = f"为您搜索到以下关于({query})的信息：\n\n"
+                        for i, result in enumerate(results[:3], 1):
+                            content = result.get("content", "")
+                            if content:
+                                response += f"{i}. {content}\n\n"
+                        
+                        return response.strip()
+                    else:
+                        return f"搜索({query})未找到相关结果。"
+                
+                # 如果返回格式不符合预期，尝试直接返回
+                return str(search_data)
                     
+            except Exception as e:
+                logging.error(f"处理搜索结果失败: {e}")
+                return f"搜索({query})时出现错误：{str(e)}"
+        
+        return "请提供要搜索的内容。"
+    
+    async def handle_music_command(self, intent): 
+        """处理音乐相关命令"""
+        command = intent.get("command")
+        tool_result = None 
+
+        if command == "播放":
+            song_name = intent.get("song_name", "")
+            if song_name:
+                
+                tool_result = await self.call_tool("netease_music-play_music", {"song_name": song_name})
+                if isinstance(tool_result, dict) and "status" in tool_result:
+                    return tool_result["status"]
+               
+                logging.warning(f"播放音乐调用结果异常: {tool_result}")
+                return str(tool_result) if tool_result else f"尝试播放 {song_name} 时出错，未收到明确结果。"
+            else:
+                return "请告诉我您想听的歌曲名称或歌手"
+
+        elif command == "停止":
+           
+            tool_result = await self.call_tool("netease_music-stopplay", {})
+
+        elif command == "暂停":
+        
+            tool_result = await self.call_tool("netease_music-pauseplay", {})
+
+        elif command == "继续":
+            
+            tool_result = await self.call_tool("netease_music-unpauseplay", {})
+
+        elif command == "下一首":
+           
+            tool_result = await self.call_tool("netease_music-next_song", {})
+            if isinstance(tool_result, dict) and "status" in tool_result:
+                return tool_result["status"]
+     
+
+        elif command == "播放列表":
+
+            tool_result = await self.call_tool("netease_music-get_playlist", {})
+
+        else:
+            return "无法处理该音乐指令。"
+
+       
+        if tool_result is not None:
+            return str(tool_result)
+
+        
+        return "音乐操作执行完毕，但未收到明确结果。"
+
+    
+    async def ask_stream(self, question, use_context=True, use_tools=True):
+        """使用流式响应回答问题"""
+        start_time = time.time()
+        
+        try:
+            # 检测意图并处理特殊命令
+            if use_tools:
+                # 检测音乐命令
+                music_intent = self.detect_music_intent(question)
+                if music_intent:
+                    result = await self.handle_music_command(music_intent)
+                    yield result
+                    
+                    # 记录对话
+                    response_time = time.time() - start_time
+                    await self.conversation_manager.add_conversation_entry(question, result, response_time)
+                    await self.conversation_manager.save_tracking_data()
+                    return
+                
+                # 检测搜索命令
+                search_intent = self.detect_search_intent(question)
+                if search_intent:
+                    # 先返回搜索提示
+                    yield "正在执行网络搜索任务..."
+                    
+                    # 执行搜索
+                    result = await self.handle_search_command(search_intent)
+                    
+                    # 返回搜索结果
+                    yield result
+                    
+                    # 记录对话
+                    response_time = time.time() - start_time
+                    await self.conversation_manager.add_conversation_entry(question, result, response_time)
+                    await self.conversation_manager.save_tracking_data()
+                    return
+            
+            # 非特殊指令处理 - 使用知识库回答
+            context = ""
+            if use_context:
+                context = self.conversation_manager.get_conversation_context(max_context=3)
+            
+            # 获取相关文档
+            docs = await asyncio.to_thread(
+                self.vectorstore.as_retriever(search_kwargs={"k": self.k_documents}).invoke,
+                question
+            )
+
+            if not docs:
+                result = "未检索到相关内容。"
+                response_time = time.time() - start_time
+                await self.conversation_manager.add_conversation_entry(question, result, response_time)
+                yield result
+                return
+
+            # 构建查询提示
+            query = "你是一个甘薯专家，请你以说话的标准回答,"
+            
+            # 构建包含上下文的提示
+            doc_context = "\n\n".join([d.page_content for d in docs])
+            
+            # 如果有对话历史，将其加入提示
+            if context:
+                prompt = f"对话历史:\n{context}\n\n参考内容:\n{doc_context}\n\n当前问题:\n{question}\n\n要求:{query}\n\n"
+            else:
+                prompt = f"参考内容:\n{doc_context}\n\n问题:\n{question}\n\n要求:{query}\n\n"
+            
+            # 使用Qwen API进行流式调用
+            messages = [
+                self.sys_msg,
+                {"role": "user", "content": prompt}
+            ]
+            
+            try:
+                # 使用与test.py相同的参数和格式
+                stream = self.client.chat.completions.create(
+                    model=self.model_name,  
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=400,
+                    stream=True
+                )
+                
+                full_response = ""
+                for chunk in stream:
+                    if chunk.choices:
+                        content = chunk.choices[0].delta.content or ""
+                        full_response += content
+                        yield content
+                
+                # 记录对话
+                response_time = time.time() - start_time
+                await self.conversation_manager.add_conversation_entry(question, full_response, response_time)
+                await self.conversation_manager.save_tracking_data()
+                        
+            except Exception as e:
+                error_msg = f"API调用出错: {e}"
+                logging.error(f"API调用失败: {e}")
+                await self.conversation_manager.record_error("API_ERROR", str(e))
+                yield error_msg
+                
         except Exception as e:
-            error_msg = f"API调用出错: {e}"
-            logging.error(f"API调用失败: {e}")
-            await self.conversation_manager.record_error("API_ERROR", str(e))
+            error_msg = f"处理问题时出错: {e}"
+            logging.error(f"处理问题失败: {e}")
+            await self.conversation_manager.record_error("PROCESS_ERROR", str(e))
             yield error_msg
+            
+    def get_player_status(self):
+        """获取音乐播放器状态"""
+        try:
+            # self.bot._call_tool 是同步的, 需要在异步代码中用 asyncio.to_thread
+            # 但这里是同步方法，所以直接调用是OK的。
+            # 返回的可能是 Observation 对象
+            return self.bot._call_tool("netease_music-isPlaying", "{}")
+        except Exception as e:
+            logging.error(f"获取播放器状态失败: {e}")
+            return "not playing" # 或者返回一个表示错误的 Observation 结构
 
 # ==================================
 # UI 组件类
 # ==================================
 class MessageBubble(QWidget):
-    """优化的聊天气泡组件"""
+    """优化的聊天气泡组件 - 高级UI设计"""
     def __init__(self, text, is_user=False, parent=None):
         super().__init__(parent)
         self.text = text
@@ -626,19 +1029,22 @@ class MessageBubble(QWidget):
         self.avatar_path = "guzz.png"
         self.robot_path = "sweetpotato.jpg"
 
-        # 为7寸屏幕优化布局
+        # 为7寸屏幕优化布局 - 增强设计
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 12, 0, 12)  
-        layout.setSpacing(15)
+        layout.setContentsMargins(0, 15, 0, 15)  
+        layout.setSpacing(18)
 
-        avatar_size = 60
+        avatar_size = 68
         avatar_label = QLabel()
         avatar_label.setFixedSize(avatar_size, avatar_size)
         avatar_label.setAlignment(Qt.AlignCenter)
+        
+        # 增强头像设计 - 添加阴影效果
         avatar_label.setStyleSheet(f"""
-            border-radius: 5px;
-            background-color: #DDDDDD;
-            border: 3px solid {"#4CAF50" if is_user else "#FF9800"};
+            border-radius: 8px;
+            background-color: #F5F5F5;
+            border: 4px solid {"#4CAF50" if is_user else "#FF9800"};
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
         """)
 
         # 加载头像图像
@@ -653,16 +1059,21 @@ class MessageBubble(QWidget):
         avatar_label.setPixmap(scaled)
 
         self._msg_label = QLabel(text)
-        self._msg_label.setFont(QFont("微软雅黑", 16))  # 增大字体
+        self._msg_label.setFont(QFont("微软雅黑", 17, QFont.Normal))  # 增大字体
         self._msg_label.setWordWrap(True)
-        self._msg_label.setMaximumWidth(780)  # 增加最大宽度
-        self._msg_label.setStyleSheet(f"""
-            background-color: {"#A4E75A" if is_user else "#FFFFFF"};
-            color: #303030;
-            border-radius: 20px;
-            padding: 15px 20px;
-            border: 2px solid {"#8BC34A" if is_user else "#E0E0E0"};
-        """)
+        self._msg_label.setMaximumWidth(820)  # 增加最大宽度
+        
+        # 增强气泡设计 - 添加渐变和阴影
+        msg_style = f"""
+            background: {"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #E8F5E9, stop:1 #C8E6C9)" if is_user else "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFFFF, stop:1 #F8F8F8)"};
+            color: #2E2E2E;
+            border-radius: 22px;
+            padding: 18px 24px;
+            border: 2px solid {"#81C784" if is_user else "#E0E0E0"};
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            margin: 5px;
+        """
+        self._msg_label.setStyleSheet(msg_style)
 
         # 按消息来源设置左右布局
         if is_user:
@@ -674,7 +1085,7 @@ class MessageBubble(QWidget):
             layout.addWidget(self._msg_label)
             layout.addStretch()
 
-        self.setMinimumHeight(80)
+        self.setMinimumHeight(85)
 
     @property
     def msg_label(self):
@@ -686,7 +1097,7 @@ class MessageBubble(QWidget):
 
 
 class ChatArea(QScrollArea):
-    """优化的聊天区域"""
+    """优化的聊天区域 - 高级UI设计"""
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -696,26 +1107,29 @@ class ChatArea(QScrollArea):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
-        # 美化滚动条样式
+        # 美化滚动条样式 - 现代化设计
         self.setStyleSheet("""
             QScrollArea {
-                background-color: #F5F5F5;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #F8FBF8, stop:1 #F0F8F0);
                 border: none;
             }
             QScrollBar:vertical {
                 border: none;
-                background: rgba(0, 0, 0, 0.05);
-                width: 10px;
+                background: rgba(255, 255, 255, 0.5);
+                width: 12px;
                 margin: 0px;
-                border-radius: 5px;
+                border-radius: 6px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(0, 0, 0, 0.15);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(76, 175, 80, 0.6), stop:1 rgba(76, 175, 80, 0.8));
                 min-height: 30px;
-                border-radius: 5px;
+                border-radius: 6px;
             }
             QScrollBar::handle:vertical:hover {
-                background: rgba(0, 0, 0, 0.25);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(76, 175, 80, 0.8), stop:1 rgba(76, 175, 80, 1.0));
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
@@ -724,13 +1138,16 @@ class ChatArea(QScrollArea):
         
         # 创建容器小部件
         self.container = QWidget()
-        self.container.setStyleSheet("background-color: #F5F5F5;")
+        self.container.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #F8FBF8, stop:1 #F0F8F0);
+        """)
         
         # 创建垂直布局
         self.layout = QVBoxLayout(self.container)
         self.layout.setAlignment(Qt.AlignTop)
-        self.layout.setSpacing(20)  # 增加间距使界面更清爽
-        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout.setSpacing(25)  # 增加间距使界面更清爽
+        self.layout.setContentsMargins(25, 25, 25, 25)
         
         # 设置滚动区域的小部件
         self.setWidget(self.container)
@@ -782,7 +1199,7 @@ class ChatArea(QScrollArea):
     
     def update_bubble_widths(self, width):
         """更新所有气泡的宽度"""
-        max_width = min(800, int(width * 0.7))  
+        max_width = min(820, int(width * 0.7))  
         for i in range(self.layout.count()):
             item = self.layout.itemAt(i)
             if item and item.widget():
@@ -791,33 +1208,35 @@ class ChatArea(QScrollArea):
                     bubble.msg_label.setMaximumWidth(max_width)
 
 class StatusIndicator(QWidget):
-    """语音状态指示器"""
+    """语音状态指示器 - 高级UI设计"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(50)
+        self.setFixedHeight(60)
         self.setStyleSheet("""
             QWidget {
-                background-color: #FFFFFF;
-                border-bottom: 2px solid #E0E0E0;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #FFFFFF, stop:1 #F8F8F8);
+                border-bottom: 3px solid #E8F5E9;
             }
         """)
         
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(20, 10, 20, 10)
+        self.layout.setContentsMargins(25, 12, 25, 12)
         
-        # 状态图标
+        # 状态图标 - 增强设计
         self.icon_label = QLabel()
-        self.icon_label.setFixedSize(24, 24)
+        self.icon_label.setFixedSize(28, 28)
         self.icon_label.setStyleSheet("""
             background-color: #5B89DB; 
-            border-radius: 12px;
-            border: 2px solid white;
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         """)
         
-        # 状态文本
+        # 状态文本 - 增强字体
         self.text_label = QLabel("正在初始化...")
-        self.text_label.setFont(QFont("微软雅黑", 14, QFont.Bold))
-        self.text_label.setStyleSheet("color: #333333;")
+        self.text_label.setFont(QFont("微软雅黑", 16, QFont.Bold))
+        self.text_label.setStyleSheet("color: #2E2E2E; text-shadow: 0 1px 3px rgba(0,0,0,0.1);")
         
         self.layout.addWidget(self.icon_label)
         self.layout.addWidget(self.text_label)
@@ -830,45 +1249,110 @@ class StatusIndicator(QWidget):
         """设置等待状态"""
         self.text_label.setText("等待语音输入...")
         self.icon_label.setStyleSheet("""
-            background-color: #5B89DB; 
-            border-radius: 12px;
-            border: 2px solid white;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #5B89DB, stop:1 #7BA5E8); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         """)
         
     def set_listening(self):
         """设置监听状态"""
         self.text_label.setText("正在聆听...")
         self.icon_label.setStyleSheet("""
-            background-color: #F44336; 
-            border-radius: 12px;
-            border: 2px solid white;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #F44336, stop:1 #E57373); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         """)
         
     def set_processing(self):
         """设置处理状态"""
         self.text_label.setText("正在思考...")
         self.icon_label.setStyleSheet("""
-            background-color: #FFC107; 
-            border-radius: 12px;
-            border: 2px solid white;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #FFC107, stop:1 #FFD54F); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         """)
         
     def set_answering(self):
         '''设置回答状态'''
         self.text_label.setText("正在播放欢迎语...")
         self.icon_label.setStyleSheet("""
-            background-color: #E91E63; 
-            border-radius: 12px;
-            border: 2px solid white;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #E91E63, stop:1 #F06292); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        """)
+        
+    def set_searching(self):
+        """设置搜索状态"""
+        self.text_label.setText("正在进行网络搜索...")
+        self.icon_label.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #673AB7, stop:1 #9575CD); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        """)
+        
+    def set_playing_music(self):
+        """设置音乐播放状态"""
+        self.text_label.setText("正在播放音乐...")
+        self.icon_label.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #009688, stop:1 #4DB6AC); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        """)
+        
+    def set_music_processing(self):
+        """设置音乐处理状态"""
+        self.text_label.setText("正在处理音乐请求...")
+        self.icon_label.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #795548, stop:1 #A1887F); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        """)
+        
+    def set_music_listening(self):
+        """设置音乐播放时的监听状态"""
+        self.text_label.setText("播放音乐中，正在聆听...")
+        self.icon_label.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #03A9F4, stop:1 #29B6F6); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        """)
+        
+    def set_music_thinking(self):
+        """设置音乐播放时的思考状态"""
+        self.text_label.setText("播放音乐中，正在思考...")
+        self.icon_label.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #607D8B, stop:1 #78909C); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         """)
         
     def set_answerd(self):
         """设置回答状态"""
         self.text_label.setText("正在回答中...")
         self.icon_label.setStyleSheet("""
-            background-color: #4CAF50; 
-            border-radius: 12px;
-            border: 2px solid white;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #4CAF50, stop:1 #66BB6A); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         """)
 
 # ==================================
@@ -890,20 +1374,20 @@ class SweetPotatoGUI(QMainWindow):
         self.current_bot_bubble = None
         
         self.follow_up_prompts = [
-    "您还有什么问题吗？",
-    "您还有什么想问的？",
-    "您还想了解些什么？",
-    "还有其他关于甘薯的问题吗？",
-    "想成为吴家卓吗？",
-    "还有什么疑问呢",
-    "嘿嘿嘿你说呀？",
-    "太豆了你，赶紧说？"
-]
-   
+            "您还有什么问题吗？",
+            "您还有什么想问的？",
+            "您还想了解些什么？",
+            "还有其他关于甘薯的问题吗？",
+            "想成为吴家卓吗？",
+            "还有什么疑问呢",
+            "嘿嘿嘿你说呀？",
+            "太豆了你，赶紧说？"
+        ]
         
-
-
-
+        # 添加音乐交互模式
+        self.music_interaction_mode = "normal"  # normal, waiting, real_time
+        self.music_timer_task = None
+        self.is_searching = False 
         # 初始化组件
         self.chat_area = ChatArea()
         self.status_indicator = StatusIndicator()
@@ -926,21 +1410,39 @@ class SweetPotatoGUI(QMainWindow):
         self.current_tasks = []
         self.current_answer = ""
         self.is_processing = False
+        self.current_question_start_time = None
+        self.first_interaction = True
 
         # UI 与事件循环
         self.init_ui()
         self.setup_asyncio_event_loop()
+        
+        # MCP 初始化
+        self.add_task(self.initialize_mcp())
+        
         # 播放欢迎并开始流程
         self.add_task(self.play_welcome_and_listen())
 
+    async def initialize_mcp(self):
+        """初始化MCP服务"""
+        self.status_indicator.text_label.setText("正在初始化MCP服务...")
+        self.mcp_connected = await self.tts_streamer.connect_to_mcp()
+        
+        if self.mcp_connected:
+            logging.info("✅ MCP服务已成功连接")
+        else:
+            logging.warning("⚠️ MCP服务连接失败，部分功能可能不可用")
+
     def init_ui(self):
+        """初始化UI - 高级设计"""
         self.setWindowTitle("甘薯知识问答系统")
         self.showFullScreen()
         
         # 设置窗口背景
         self.setStyleSheet("""
             QMainWindow {
-                background-color: #FAFAFA;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #F8FBF8, stop:1 #F0F8F0);
             }
         """)
         
@@ -955,58 +1457,55 @@ class SweetPotatoGUI(QMainWindow):
         header.setStyleSheet("""
             QWidget {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #FF9800, stop:1 #FFA726);
-                border-bottom: 3px solid #F57C00;
+                    stop:0 #FF9800, stop:1 #FFB74D);
+                border-bottom: 4px solid #F57C00;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
             }
         """)
-        header.setFixedHeight(70)
+        header.setFixedHeight(80)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(20, 10, 20, 10)
+        header_layout.setContentsMargins(25, 12, 25, 12)
 
-        # Logo 区域
+        # Logo 区域 - 增强设计
         logo_container = QWidget()
-        logo_container.setFixedSize(50, 50)
+        logo_container.setFixedSize(56, 56)
         logo_container.setStyleSheet("""
             background-color: white;
-            border-radius: 25px;
-            border: 3px solid #FFB74D;
+            border-radius: 28px;
+            border: 4px solid #FFB74D;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
         """)
-        # logo_label = QLabel("🍠")
-        # logo_label.setAlignment(Qt.AlignCenter)
-        # logo_label.setFont(QFont("微软雅黑", 24))
-        # logo_label.setStyleSheet("background-color: transparent; border: none;")
-        # logo_layout = QHBoxLayout(logo_container)
-        # logo_layout.setContentsMargins(0, 0, 0, 0)
-        # logo_layout.addWidget(logo_label)
 
-        # 标题
+        # 标题 - 增强字体
         title_label = QLabel("甘薯知识助手")
-        title_label.setFont(QFont("微软雅黑", 22, QFont.Bold))
+        title_label.setFont(QFont("微软雅黑", 26, QFont.Bold))
         title_label.setAlignment(Qt.AlignVCenter)
         title_label.setStyleSheet("""
             color: white;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            text-shadow: 2px 2px 6px rgba(0,0,0,0.4);
             background-color: transparent;
             border: none;
         """)
 
-        # 用户信息
+        # 用户信息 - 增强设计
         user_container = QWidget()
         user_container.setStyleSheet("""
-            background-color: rgba(255, 255, 255, 0.2);
-            border-radius: 20px;
-            padding: 5px 15px;
+            background-color: rgba(255, 255, 255, 0.25);
+            border-radius: 22px;
+            padding: 8px 18px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
         """)
         user_label = QLabel(f"{self.user_name}")
-        user_label.setFont(QFont("微软雅黑", 16, QFont.Bold))
+        user_label.setFont(QFont("微软雅黑", 18, QFont.Bold))
         user_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         user_label.setStyleSheet("""
             color: white;
             background-color: transparent;
             border: none;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.3);
         """)
         user_layout = QHBoxLayout(user_container)
-        user_layout.setContentsMargins(10, 5, 10, 5)
+        user_layout.setContentsMargins(12, 8, 12, 8)
         user_layout.addWidget(user_label)
 
         header_layout.addWidget(logo_container)
@@ -1039,6 +1538,19 @@ class SweetPotatoGUI(QMainWindow):
         self.current_tasks.append(task)
         task.add_done_callback(lambda t: self.current_tasks.remove(t) if t in self.current_tasks else None)
         return task
+    
+    def set_search_status(self):
+        """设置正确的搜索状态"""
+        self.status_indicator.set_searching()
+        self.is_searching = True
+        
+    def clear_search_status(self):
+        """清除搜索状态并返回到适当的状态"""
+        self.is_searching = False
+        if self.music_interaction_mode == "real_time":
+            self.status_indicator.set_music_listening()
+        else:
+            self.status_indicator.set_listening()
 
     async def play_welcome_and_listen(self):
         welcome_msg = f"您好，{self.user_name}！我是甘薯知识助手，请通过语音向我提问关于甘薯的问题。"
@@ -1049,9 +1561,6 @@ class SweetPotatoGUI(QMainWindow):
         # 播报并等待完成
         await self.tts_streamer.speak_text(welcome_msg, wait=True)
         
-        # 语音提示（不显示在屏幕上）
-        await self.tts_streamer.speak_text("您有什么想问的吗？", wait=True)
-        
         # 设置为"已回答"状态
         self.status_indicator.set_answerd()
         # 切到"聆听"状态并启动连续聆听
@@ -1059,85 +1568,414 @@ class SweetPotatoGUI(QMainWindow):
         await asyncio.sleep(0.2)
         self.add_task(self.continuous_listening_task())
 
+    async def get_music_preference(self, result):
+        """询问用户对音乐播放的偏好设置"""
+        logging.info("🎵 询问用户音乐播放偏好")
+        
+        # 询问用户偏好
+        preference_prompt = f"{result}您希望等待播放完成再问问题，还是马上继续对话？"
+        
+        try:
+            await self.tts_streamer.speak_text(preference_prompt, wait=True)
+        except Exception as e:
+            logging.error(f"⚠️ 播放偏好询问失败: {e}")
+            print("🎵 音乐已开始播放，您希望等待播放完成再问问题，还是马上继续对话？")
+        
+        await asyncio.sleep(0.5)
+        await self.clear_audio_buffer()
+        
+        # 显示监听指示器
+        self.status_indicator.set_listening()
+        
+        # 获取用户回答
+        preference_result = await self.asr_helper.real_time_recognition(
+            callback=lambda status: self.bridge.status_changed.emit(status)
+        )
+        
+        if not preference_result:
+            logging.info("❌ 未检测到有效回答，默认选择马上继续")
+            
+            return "immediate"
+        
+        user_choice = preference_result.lower()
+        logging.info(f"🎵 用户音乐偏好选择: {user_choice}")
+        
+        # 解析用户选择
+        if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完","是的","没错","好","好的","接着","听","放"]):
+            return "wait"
+        elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在","提问","快","推进"]):
+            return "immediate"
+        elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以","知道"]):
+            return "uncertain"
+        else:
+            return "uncertain"
+            
+    async def handle_music_interaction(self, text, music_intent):
+        """处理音乐相关的交互逻辑"""
+        # 设置状态为音乐处理
+        self.status_indicator.set_music_processing()
+        
+        # 使用qa模型处理音乐指令
+        result = await self.qa_model.handle_music_command(music_intent)
+        
+        # 添加交互显示
+        self.bridge.add_user_message.emit(text)
+        self.bridge.start_bot_message.emit()
+        self.bridge.update_bot_message.emit(result)
+        
+        # 记录对话
+        response_time = time.time() - self.current_question_start_time
+        question = music_intent.get("song_name", "音乐操作")
+        await self.conversation_manager.add_conversation_entry(question, result, response_time)
+        await self.conversation_manager.save_tracking_data()
+        
+        # 如果是播放音乐命令，询问用户偏好
+        if music_intent.get("command") == "播放":
+            # 播放结果
+            # await self.tts_streamer.speak_text(result, wait=True)
+            
+            # 询问用户偏好
+            preference = await self.get_music_preference(result)
+            
+            if preference == "wait":
+                self.music_interaction_mode = "waiting"
+                await self.tts_streamer.speak_text("将等待音乐播放完成后再继续。", wait=True)
+                logging.info("🎵 设置模式: 等待音乐播放完成")
+                # 设置音乐播放状态
+                self.status_indicator.set_playing_music()
+                
+            elif preference == "immediate":
+                self.music_interaction_mode = "real_time"
+                await self.tts_streamer.speak_text("好的，您可以随时发出语音指令。", wait=True)
+                logging.info("🎵 设置模式: 实时交互")
+                # 设置音乐播放时的监听状态
+                self.status_indicator.set_music_listening()
+                
+            elif preference == "uncertain":
+                # 创建一个专门用于定时器的新模式
+                self.music_interaction_mode = "timer_waiting"
+                await self.tts_streamer.speak_text("好的，将在一分钟后询问您是否有问题。", wait=True)
+                logging.info("🎵 设置模式: 定时提醒")
+                # 设置音乐播放状态
+                self.status_indicator.set_playing_music()
+                
+                # 启动定时器任务
+                self.music_timer_task = self.add_task(self.music_timer_reminder())
+        else:
+            # 非播放音乐命令，播放操作结果
+            await self.tts_streamer.speak_text(result, wait=True)
+            # 恢复正常监听状态
+            self.status_indicator.set_listening()
+        
+        return True
+        
+    async def music_timer_reminder(self):
+        try:
+            await asyncio.sleep(60)
+            
+            # 定时器完成后不直接切换到normal模式，而是再次询问用户偏好
+            if self.music_interaction_mode == "timer_waiting":
+                # 询问用户是否继续等待还是开始提问
+                await self.tts_streamer.speak_text("音乐正在播放，您希望等待播放完成再问问题，还是现在就开始提问？", wait=True)
+                
+                # 清理音频缓冲区
+                await self.clear_audio_buffer()
+                
+                # 显示监听指示器
+                self.status_indicator.set_listening()
+                
+                # 获取用户回答
+                preference_result = await self.asr_helper.real_time_recognition(
+                    callback=lambda status: self.bridge.status_changed.emit(status)
+                )
+                
+                if not preference_result:
+                    logging.info("❌ 未检测到有效回答，继续等待")
+                    # 如果没有有效回答，继续等待
+                    self.music_timer_task = self.add_task(self.music_timer_reminder())
+                    self.status_indicator.set_playing_music()
+                    return
+                
+                user_choice = preference_result.lower()
+                logging.info(f"🎵 用户音乐偏好选择: {user_choice}")
+                
+                # 解析用户选择
+                if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完", "是的", "没错", "好", "好的"]):
+                    self.music_interaction_mode = "waiting"
+                    await self.tts_streamer.speak_text("好的，将等待音乐播放完成后再继续。", wait=True)
+                    logging.info("🎵 设置模式: 等待音乐播放完成")
+                    self.status_indicator.set_playing_music()
+                elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在", "提问", "快", "推进"]):
+                    self.music_interaction_mode = "real_time"
+                    await self.tts_streamer.speak_text("好的，您可以随时发出语音指令。", wait=True)
+                    logging.info("🎵 设置模式: 实时交互")
+                    self.status_indicator.set_music_listening()
+                elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以"]):
+                    # 继续使用timer_waiting模式并重启定时器
+                    self.music_timer_task = self.add_task(self.music_timer_reminder())
+                    await self.tts_streamer.speak_text("好的，将在一分钟后再次询问。", wait=True)
+                    logging.info("🎵 设置模式: 继续定时提醒")
+                    self.status_indicator.set_playing_music()
+                else:
+                    # 默认保持当前模式并重启定时器
+                    self.music_timer_task = self.add_task(self.music_timer_reminder())
+                    await self.tts_streamer.speak_text("好的，将在一分钟后再次询问。", wait=True)
+                    logging.info("🎵 设置模式: 继续定时提醒")
+                    self.status_indicator.set_playing_music()
+        except asyncio.CancelledError:
+            logging.info("🎵 定时提醒任务被取消")
+        except Exception as e:
+            logging.error(f"🎵 定时提醒任务出错: {e}")
+
     async def continuous_listening_task(self):
         while True:
             try:
                 # 保证 TTS 完毕
                 if self.tts_streamer.is_speaking:
                     await self.tts_streamer.wait_until_done()
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.1) # 确保TTS流完全结束后有短暂喘息
                 await self.clear_audio_buffer()
 
-                # 语音识别
-                text = await self.asr_helper.real_time_recognition(
-                    callback=lambda status: self.bridge.status_changed.emit(status)
-                )
+                # ================================================================
+                # ===== 特殊处理：音乐播放中的实时指令监听 (real_time mode) =====
+                # ================================================================
+                if self.music_interaction_mode == "real_time":
+                    if not self.is_processing: # 确保不在处理上一个指令
+                        self.status_indicator.set_music_listening() # 设置状态为音乐播放中聆听
+
+                        # 可以选择不播放提示音 "请"，以减少干扰
+                        # await self.tts_streamer.speak_text(" ", wait=True) # 如果需要极短提示音
+                        
+                        await self.clear_audio_buffer() # 再次清理，确保干净的录音环境
+
+                        # 使用您期望的10秒作为最大录音时长进行关键词识别
+                        text = await self.asr_helper.real_time_recognition(
+                            callback=lambda status: self.bridge.status_changed.emit(status),
+                         
+                        )
+
+                        # 实时检查音乐播放状态，如果音乐已停止，则自动切换回普通模式
+                        player_status_obj = self.qa_model.get_player_status()
+                        player_status_str = ""
+                        if hasattr(player_status_obj, 'content') and player_status_obj.content and isinstance(player_status_obj.content[0].get('text'), str):
+                             player_status_str = player_status_obj.content[0]['text']
+                        elif isinstance(player_status_obj, str):
+                             player_status_str = player_status_obj
+
+
+                        if player_status_str != "playing":
+                            logging.info("🎵 Real-time: 音乐播放已停止，自动切换到普通模式。")
+                            self.music_interaction_mode = "normal"
+                            self.status_indicator.set_listening()
+                            if self.music_timer_task and not self.music_timer_task.done():
+                                self.music_timer_task.cancel()
+                            await self.tts_streamer.speak_text("音乐已停止。", wait=True)
+                            continue # 进入下一次循环，将按 normal 模式处理
+
+                        if text and text.strip(): # 确保识别到有效文本
+                            self.is_processing = True # 开始处理
+                            self.current_question_start_time = time.time()
+
+                            music_intent = self.qa_model.detect_music_intent(text)
+                            if music_intent:
+                                logging.info(f"🎵 Real-time mode: 检测到音乐指令: {music_intent} 来自: '{text}'")
+                                if self.music_timer_task and not self.music_timer_task.done():
+                                    self.music_timer_task.cancel()
+
+                                self.status_indicator.set_music_processing() # 音乐指令处理中状态
+
+                                # 调用QA模型的音乐处理，获取工具返回结果
+                                result = await self.qa_model.handle_music_command(music_intent)
+
+                                # 在UI上显示用户指令和机器人回应
+                                self.bridge.add_user_message.emit(text)
+                                self.bridge.start_bot_message.emit()
+                                self.bridge.update_bot_message.emit(str(result)) # 工具结果可能是dict或str
+                                
+                                # TTS播报操作结果
+                                await self.tts_streamer.speak_text(str(result), wait=True)
+
+                                # 如果是停止指令，切换回普通模式
+                                if music_intent.get("command") == "停止":
+                                    self.music_interaction_mode = "normal"
+                                    logging.info("🎵 Real-time: 用户发出停止指令，切换到普通模式。")
+                                    self.status_indicator.set_listening()
+                                else:
+                                    # 其他音乐指令（暂停、下一首等）后，保持real_time模式并继续监听
+                                    self.status_indicator.set_music_listening()
+                            else:
+                                # 非音乐指令，忽略
+                                logging.info(f"🎵 Real-time mode: 忽略非音乐指令: '{text}'")
+                                # 不做任何回应，也不改变状态，让用户感觉它只听音乐指令
+
+                            self.is_processing = False # 处理完毕
+                        
+                        # 短暂休眠后继续监听音乐指令，避免CPU空转过快
+                        await asyncio.sleep(0.1) 
+                        continue # ⭐ crucial: 跳过后续的普通问答逻辑，直接开始下一次音乐指令监听
+
+                # ================================================================
+                # ===== 其他模式 (normal, waiting, timer_waiting) 的逻辑 =====
+                # ================================================================
+                
+                # --- waiting 模式：检查音乐是否播放完毕 ---
+                elif self.music_interaction_mode == "waiting":
+                    player_status_obj = self.qa_model.get_player_status()
+                    player_status_str = ""
+                    if hasattr(player_status_obj, 'content') and player_status_obj.content and isinstance(player_status_obj.content[0].get('text'), str):
+                         player_status_str = player_status_obj.content[0]['text']
+                    elif isinstance(player_status_obj, str):
+                         player_status_str = player_status_obj
+
+                    if player_status_str == "playing":
+                        logging.info("🎵 Waiting mode: 音乐仍在播放，继续等待...")
+                        self.status_indicator.set_playing_music() # 保持播放音乐状态
+                        await asyncio.sleep(2)  # 每2秒检查一次
+                        continue
+                    else:
+                        logging.info("🎵 Waiting mode: 音乐播放完成，切换到普通模式。")
+                        self.music_interaction_mode = "normal"
+                        await self.tts_streamer.speak_text("音乐播放完成，现在可以提问了。", wait=True)
+                        await self.clear_audio_buffer()
+                        # 将在下一次循环进入 normal 模式的逻辑
+
+                # --- timer_waiting 模式：简单等待，具体逻辑在 music_timer_reminder 中 ---
+                elif self.music_interaction_mode == "timer_waiting":
+                    self.status_indicator.set_playing_music() # 保持播放音乐状态
+                    await asyncio.sleep(1) # 简单等待，等待定时器任务唤醒或改变模式
+                    continue
+                
+                # --- normal 模式：正常的提问和回答流程 ---
+                if self.music_interaction_mode == "normal":
+                    if not self.is_processing:
+                        prompt_text = f"您好，{self.user_name}！我是甘薯知识助手。" if self.first_interaction else random.choice(self.follow_up_prompts)
+                        if self.first_interaction: # 第一次交互完成后，后续不再是first_interaction
+                             self.first_interaction = False
+
+                        try:
+                            await self.tts_streamer.speak_text(prompt_text, wait=True)
+                        except Exception as e:
+                            logging.error(f"⚠️ 语音提示失败: {e}")
+                        
+                        await asyncio.sleep(0.3) # 等待TTS完全结束
+                        await self.clear_audio_buffer()
+
+                # --- 通用语音识别 (主要用于 normal 模式) ---
+                # 只有在 normal 模式下，或从 waiting/timer_waiting 切换到 normal 后，才会执行到这里进行常规ASR
+                if self.music_interaction_mode == "normal": # 再次确认是normal模式
+                    self.status_indicator.set_listening()
+                    text = await self.asr_helper.real_time_recognition(
+                        callback=lambda status: self.bridge.status_changed.emit(status)
+                        # 这里会使用 ASRHelper 中定义的默认 MAX_RECORD_SECONDS (5秒)
+                    )
+                else: # 如果不是real_time, waiting, timer_waiting, normal (理论上不应发生)
+                    await asyncio.sleep(0.1)
+                    continue
+
+
+                # ===== 后续统一处理识别到的文本 (主要针对 normal 模式) =====
+                # (L1367 之后的逻辑，如检查 "嗯嗯", 退出指令, 普通的音乐/搜索意图检测, RAG问答)
+                # 注意：这里的 music_intent 和 search_intent 主要服务于 normal 模式下的首次触发。
+                # real_time 模式下的 music_intent 已在前面专属块中处理。
+
+                if (not text or not text.strip() or
+                        text.lower() in ["嗯。", "嗯嗯。", "嗯嗯嗯。", "啊。", "啊？"] or 
+                        re.fullmatch(r"嗯+", text.lower())): # 更精确地匹配纯"嗯"类无意义输入
+                    logging.info(f"❌ 未检测到有效语音输入或输入为无意义词: '{text}'")
+                    # 在UI上可以给出提示，或者无提示直接重新监听
+                    # self.bridge.update_bot_message.emit("我好像没听清，您可以再说一遍吗？")
+                    # await asyncio.sleep(1) # 等待用户再次说话
+                    continue # 无效输入，直接开始下一次监听
 
                 if text and not self.is_processing:
                     self.is_processing = True
-                    # 新问题，切到"处理"状态
-                    self.bridge.add_user_message.emit(text)
-                    self.status_indicator.set_processing()
+                    self.current_question_start_time = time.time()
+                    
+                    # 检查退出命令 (所有模式下均可退出)
+                    if any(word in text.lower() for word in ["拜拜", "再见", "退出"]):
+                        # ... (现有退出逻辑 L1383 - L1395) ...
+                        logging.info(f"🚪 收到退出命令: '{text}'")
+                        self.bridge.add_user_message.emit(text)
+                        self.bridge.start_bot_message.emit()
+                        self.bridge.update_bot_message.emit("再见！感谢使用甘薯知识助手。")
+                        
+                        if self.music_timer_task and not self.music_timer_task.done():
+                            self.music_timer_task.cancel()
+                        
+                        await self.tts_streamer.speak_text("好的，感谢使用甘薯知识助手，再见！", wait=True)
+                        self.close()
+                        return
 
-                    # 开始机器人消息
-                    self.bridge.start_bot_message.emit()
-                    self.current_answer = ""
-                    
-                    # 文本缓冲区
-                    text_buffer = ""
-                    # 计算缓冲区中标点符号的数量
-                    punctuation_count = 0
-                    # 设置标点符号阈值，达到这个数量才发送
-                    punctuation_threshold = 3  # 可以调整为3或4
-                    
-                    # 设置为回答状态
-                    self.status_indicator.set_answerd()
+                    # ---- Normal Mode Intent Processing ----
+                    if self.music_interaction_mode == "normal":
+                        music_intent = self.qa_model.detect_music_intent(text)
+                        if music_intent:
+                            # 这是从 normal 模式触发的音乐指令 (例如，在没有播放音乐时说 "播放音乐")
+                            await self.handle_music_interaction(text, music_intent) # handle_music_interaction 会处理后续模式切换
+                            self.is_processing = False
+                            continue 
+                        
+                        search_intent = self.qa_model.detect_search_intent(text)
+                        if search_intent:
+                            # ... (现有搜索逻辑 L1414 - L1445) ...
+                            self.is_searching = True
+                            self.bridge.add_user_message.emit(text)
+                            self.status_indicator.set_searching()
+                            self.bridge.start_bot_message.emit()
+                            self.bridge.update_bot_message.emit("正在执行网络搜索任务...")
+                            result = await self.qa_model.handle_search_command(search_intent)
+                            self.is_searching = False
+                            self.bridge.update_bot_message.emit(result)
+                            await self.tts_streamer.speak_text(result, wait=True)
+                            # ... (记录对话等) ...
+                            self.status_indicator.set_listening() # 搜索完恢复聆听
+                            self.is_processing = False
+                            continue
 
-                    # 流式生成回答并同步进行语音合成
-                    async for chunk in self.qa_model.ask_stream(text):
-                        self.current_answer += chunk
-                        self.bridge.update_bot_message.emit(self.current_answer)
-                        
-                        # 将新块添加到缓冲区
-                        text_buffer += chunk
-                        
-                        # 计算当前块中的标点符号数量
-                        new_punctuations = len(re.findall(r'[。，,.!?！？;；]', chunk))
-                        punctuation_count += new_punctuations
-                        
-                        # 条件：达到标点符号阈值或缓冲区足够长
-                        if (punctuation_count >= punctuation_threshold and len(text_buffer) >= 15) or len(text_buffer) > 80:
-                            if text_buffer.strip():
-                                await self.tts_streamer.speak_text(text_buffer, wait=False)
-                            
-                            # 重置缓冲区和计数器
-                            text_buffer = ""
-                            punctuation_count = 0
-                        
-                        # 给UI渲染的时间
-                        await asyncio.sleep(0.01)
-                    
-                    # 处理剩余的文本缓冲区
-                    if text_buffer.strip():
-                        await self.tts_streamer.speak_text(text_buffer, wait=False)
-                    
-                    # 等待所有语音播放完成
-                    await self.tts_streamer.wait_until_done()
-                    
-                    # 语音提示继续对话（不显示在屏幕上）
-                    follow_up = random.choice(self.follow_up_prompts)
-                    await self.tts_streamer.speak_text(follow_up, wait=True)
-                    
-                    # 播报结束，切到"聆听"
-                    self.status_indicator.set_listening()
-                    self.is_processing = False
+                        # --- Normal Q&A (RAG) ---
+                        # (现有 L1448 - L1499 的 RAG 问答逻辑)
+                        self.bridge.add_user_message.emit(text)
+                        self.status_indicator.set_processing() # 普通问答处理中
+                        self.bridge.start_bot_message.emit()
+                        self.current_answer = ""
+                        text_buffer = ""
+                        punctuation_count = 0
+                        punctuation_threshold = 3
+                        self.status_indicator.set_answerd() # 准备回答
 
-                await asyncio.sleep(0.5)
+                        async for chunk in self.qa_model.ask_stream(text):
+                            self.current_answer += chunk
+                            self.bridge.update_bot_message.emit(self.current_answer)
+                            text_buffer += chunk
+                            new_punctuations = len(re.findall(r'[。，,.!?！？;；]', chunk))
+                            punctuation_count += new_punctuations
+                            if (punctuation_count >= punctuation_threshold and len(text_buffer) >= 15) or len(text_buffer) > 80:
+                                if text_buffer.strip():
+                                    await self.tts_streamer.speak_text(text_buffer, wait=False)
+                                text_buffer = ""
+                                punctuation_count = 0
+                            await asyncio.sleep(0.01)
+                        
+                        if text_buffer.strip():
+                            await self.tts_streamer.speak_text(text_buffer, wait=False)
+                        await self.tts_streamer.wait_until_done()
+                        # ... (记录对话) ...
+                        self.status_indicator.set_listening() # 回答完毕，恢复聆听
+                        self.is_processing = False
+                    
+                    # 如果在非 normal 模式下走到了这里（理论上不应该，因为前面有 continue），则简单重置
+                    elif not self.is_processing: # 确保重置
+                        self.is_processing = False
+
+                await asyncio.sleep(0.1) # 在循环末尾添加短暂休眠
+            except asyncio.CancelledError:
+                logging.info(" główne zadanie nasłuchiwania zostało anulowane.")
+                break
             except Exception as e:
-                logging.error(f"连续聆听过程中出错: {e}")
-                self.is_processing = False
-                await asyncio.sleep(1)
-
+                logging.error(f"连续聆听主循环中出错: {e}", exc_info=True)
+                self.is_processing = False # 确保重置状态
+                self.status_indicator.set_waiting() # 出错后回到等待状态
+                await asyncio.sleep(1) # 发生错误后稍作等待
     async def clear_audio_buffer(self):
         try:
             if hasattr(self.asr_helper, 'stream') and self.asr_helper.stream:
@@ -1152,15 +1990,33 @@ class SweetPotatoGUI(QMainWindow):
         if status == "waiting":
             self.status_indicator.set_waiting()
         elif status == "listening":
-            self.status_indicator.set_listening()
+            # 根据音乐模式决定监听状态
+            if self.music_interaction_mode == "real_time":
+                self.status_indicator.set_music_listening()
+            else:
+                self.status_indicator.set_listening()
         elif status == "processing":
-            self.status_indicator.set_processing()
+            # 根据音乐模式决定处理状态
+            if self.music_interaction_mode == "real_time":
+                self.status_indicator.set_music_thinking()
+            else:
+                self.status_indicator.set_processing()
         elif status == "answering":
             self.status_indicator.set_answerd()
+        elif status == "searching":
+            self.status_indicator.set_searching()
+        elif status == "playing_music":
+            self.status_indicator.set_playing_music()
 
     def add_question(self, text):
         self.chat_area.add_message(text, is_user=True)
-        self.status_indicator.set_processing()
+        
+        # 如果正在搜索则不更改状态
+        if not self.is_searching:
+            if self.music_interaction_mode == "real_time":
+                self.status_indicator.set_music_thinking()
+            else:
+                self.status_indicator.set_processing()
 
     def start_bot_message(self):
         self.current_bot_bubble = self.chat_area.add_message("", is_user=False)
@@ -1174,9 +2030,10 @@ class SweetPotatoGUI(QMainWindow):
         self.loading_dots = "." * ((len(self.loading_dots) % 3) + 1)
         if self.current_bot_bubble:
             self.current_bot_bubble.update_text(f"正在思考中{self.loading_dots}")
+
     def update_bot_message(self, text):
         """更新机器人消息"""
-        if self.loading_dots_timer.isActive():
+        if self.loading_dots_timer and self.loading_dots_timer.isActive():
             self.loading_dots_timer.stop()
         if self.current_bot_bubble:
             self.current_bot_bubble.update_text(text)
@@ -1187,7 +2044,11 @@ class SweetPotatoGUI(QMainWindow):
     def start_real_time_listening(self):
         if self.is_processing:
             return
-        self.status_indicator.set_listening()
+        # 根据音乐模式设置状态
+        if self.music_interaction_mode == "real_time":
+            self.status_indicator.set_music_listening()
+        else:
+            self.status_indicator.set_listening()
         self.add_task(self.continuous_listening_task())
 
     def stop_recording(self):
@@ -1204,8 +2065,33 @@ class SweetPotatoGUI(QMainWindow):
         self.asr_helper.close_audio()
         self.timer.stop()
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(self.conversation_manager.save_tracking_data())
+        loop.run_until_complete(self.shutdown())
         super().closeEvent(event)
+        
+    async def shutdown(self):
+        """清理资源并关闭系统"""
+        logging.info("正在关闭系统...")
+        
+        try:
+            # 保存对话数据
+            await self.conversation_manager.save_tracking_data()
+            
+            # 获取会话摘要
+            session_summary = self.conversation_manager.get_session_summary()
+            logging.info(f"会话统计: {session_summary}")
+            
+            # 关闭TTS
+            if self.tts_streamer:
+                await self.tts_streamer.shutdown()
+                
+            # 关闭ASR
+            if self.asr_helper:
+                self.asr_helper.close_audio()
+                
+            logging.info("所有资源已清理，系统已安全关闭")
+            
+        except Exception as e:
+            logging.error(f"清理资源时出错: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
