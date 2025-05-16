@@ -7,6 +7,7 @@ import argparse
 import time
 import itertools
 import threading
+import re
 from qa_model_easy import KnowledgeQA
 from asr import ASRhelper
 from tts_stream import TTSStreamer  
@@ -37,7 +38,7 @@ class LoadingAnimation:
             ["[■□□□□□□]", "[■■□□□□□]", "[■■■□□□□]", "[■■■■□□□]","[■■■■■□□]", "[■■■■■■□]","[■■■■■■■]"],
             ["(•_•)", "( •_•)>⌐■-■", "(⌐■_■)"],
             ["🐱  ", " 🐱 ", "  🐱", " 🐱 "],
-            ["🐶➡️", "🐶 ➡️", "🐶  ➡️", "🐶   ➡️"]
+            ["🐶➡️", "🐶 ➡️", "🐶  ➡️", "🐶   ➡️"] 
         ]
         spinner = spinners[2]  
         
@@ -121,6 +122,9 @@ class SweetPotatoChatbox:
         # 动画管理器
         self.animation_manager = AnimationManager()
         
+        # 流式输出相关属性
+        self.current_answer = ""
+        
     async def authenticate_user(self):
         """使用人脸识别进行用户认证"""
         logging.info("🔐 开始人脸认证...")
@@ -128,7 +132,7 @@ class SweetPotatoChatbox:
         
         # 初始化TTS用于提示信息
         temp_tts = TTSStreamer(voice=self.voice)
-        await temp_tts.speak_text("11开始人脸认证，请面向摄像头", wait=True)
+        await temp_tts.speak_text("开始人脸认证，请面向摄像头", wait=True)
         time.sleep(0.5)
         
         await asyncio.sleep(1.0)
@@ -137,7 +141,7 @@ class SweetPotatoChatbox:
         face_system = FaceRecognizer()
         if not face_system.initialize():
             logging.error("❌ 人脸识别系统初始化失败")
-            await temp_tts.speak_text("11人脸识别系统初始化失败,请检查人脸模型", wait=True)
+            await temp_tts.speak_text("人脸识别系统初始化失败,请检查人脸模型", wait=True)
             await temp_tts.shutdown()
             print("❌ 人脸识别系统初始化失败，程序退出")
             return False, None
@@ -148,12 +152,12 @@ class SweetPotatoChatbox:
         # 根据认证结果提供语音反馈
         if auth_success:
             self.conversation_manager.tracking_data['user_id'] = user_name
-            welcome_message = f"11欢迎你{user_name}已进入甘薯知识系统。"
+            welcome_message = f"欢迎你{user_name}已进入甘薯知识系统。"
             logging.info(f"✅ 认证成功: {user_name}")
             print(f"\n✅ 认证成功！欢迎 {user_name}")
             await temp_tts.speak_text(welcome_message, wait=True)
         else:
-            deny_message = "11你是谁我不认识你系统将退出。"
+            deny_message = "你是谁我不认识你系统将退出。"
             logging.info("🚫 认证失败，拒绝访问")
             print("\n🚫 认证失败，无法识别用户，系统将退出")
             await temp_tts.speak_text(deny_message, wait=True)
@@ -173,7 +177,7 @@ class SweetPotatoChatbox:
             self.animation_manager.stop_current()
             
             try:
-                await self.tts.speak_text("11正在初始化系统...", wait=True)
+                await self.tts.speak_text("正在初始化系统...", wait=True)
             except Exception as e:
                 logging.error(f"⚠️ TTS初始化测试失败: {e}")
                 print("⚠️ 警告: 语音合成服务不可用，将以文本方式提供反馈")
@@ -189,7 +193,7 @@ class SweetPotatoChatbox:
             # 初始化QA模型
             logging.info("🧠 正在加载知识模型，这可能需要一些时间...")
             try:
-                await self.tts.speak_text("11正在加载知识模型，这可能需要一些时间...", wait=True)
+                await self.tts.speak_text("正在加载知识模型，这可能需要一些时间...", wait=True)
             except Exception as e:
                 logging.error(f"⚠️ TTS语音播放失败: {e}")
                 print("🧠 正在加载知识模型，这可能需要一些时间...")
@@ -254,13 +258,13 @@ class SweetPotatoChatbox:
         logging.info("🎵 询问用户音乐播放偏好")
         
         # 询问用户偏好
-        preference_prompt = f"{result}您希望等待播放完成再问问题，还是立即继续对话？"
+        preference_prompt = f"{result}您希望等待播放完成再问问题，还是马上继续对话？"
         
         try:
             await self.tts.speak_text(preference_prompt, wait=True)
         except Exception as e:
             logging.error(f"⚠️ 播放偏好询问失败: {e}")
-            print("🎵 音乐已开始播放，您希望等待播放完成再问问题，还是立即继续对话？")
+            print("🎵 音乐已开始播放，您希望等待播放完成再问问题，还是马上继续对话？")
         
         await asyncio.sleep(0.5)
         await self.clear_audio_buffer()
@@ -273,7 +277,7 @@ class SweetPotatoChatbox:
         self.animation_manager.stop_current()
         
         if not preference_result or 'result' not in preference_result or not preference_result['result']:
-            logging.info("❌ 未检测到有效回答，默认选择立即继续")
+            logging.info("❌ 未检测到有效回答，默认选择马上继续")
             return "immediate"
         
         user_choice = preference_result["result"][0].lower()
@@ -307,25 +311,25 @@ class SweetPotatoChatbox:
             # 先播放音乐操作结果
             if result:
                 clean_result = result.replace("11", "").strip()
-                # await self.tts.speak_text(f"11{clean_result}", wait=True)
+                # await self.tts.speak_text(f"{clean_result}", wait=True)
             
             # 询问用户偏好
             preference = await self.get_music_preference(result)
             
             if preference == "wait":
                 self.music_interaction_mode = "waiting"
-                await self.tts.speak_text("11将等待音乐播放完成后再继续。", wait=True)
+                await self.tts.speak_text("将等待音乐播放完成后再继续。", wait=True)
                 logging.info("🎵 设置模式: 等待音乐播放完成")
                 
             elif preference == "immediate":
                 self.music_interaction_mode = "real_time"
-                await self.tts.speak_text("11好的，您可以随时发出语音指令。", wait=True)
+                await self.tts.speak_text("好的，您可以随时发出语音指令。", wait=True)
                 logging.info("🎵 设置模式: 实时交互")
                 
             elif preference == "uncertain":
                 # 创建一个专门用于定时器的新模式
                 self.music_interaction_mode = "timer_waiting"  # <-- 修改此处
-                await self.tts.speak_text("11好的，将在一分钟后询问您是否有问题。", wait=True)
+                await self.tts.speak_text("好的，将在一分钟后询问您是否有问题。", wait=True)
                 logging.info("🎵 设置模式: 定时提醒")
                 
                 # 启动定时器任务
@@ -334,7 +338,7 @@ class SweetPotatoChatbox:
             # 非播放音乐命令，播放操作结果
             if result:
                 clean_result = result.replace("11", "").strip()
-                await self.tts.speak_text(f"11{clean_result}", wait=False)
+                await self.tts.speak_text(f"{clean_result}", wait=False)
         
         return True
 
@@ -345,7 +349,7 @@ class SweetPotatoChatbox:
             # 定时器完成后不直接切换到normal模式，而是再次询问用户偏好
             if not self.shutdown_event.is_set() and self.music_interaction_mode == "timer_waiting":
                 # 询问用户是否继续等待还是开始提问
-                await self.tts.speak_text("11音乐正在播放，您希望等待播放完成再问问题，还是现在就开始提问？", wait=True)
+                await self.tts.speak_text("音乐正在播放，您希望等待播放完成再问问题，还是现在就开始提问？", wait=True)
                 
                 # 清理音频缓冲区
                 await self.clear_audio_buffer()
@@ -369,21 +373,21 @@ class SweetPotatoChatbox:
                 # 解析用户选择
                 if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完", "是的", "没错", "好", "好的"]):
                     self.music_interaction_mode = "waiting"
-                    await self.tts.speak_text("11好的，将等待音乐播放完成后再继续。", wait=True)
+                    await self.tts.speak_text("好的，将等待音乐播放完成后再继续。", wait=True)
                     logging.info("🎵 设置模式: 等待音乐播放完成")
                 elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在", "提问", "快", "推进"]):
                     self.music_interaction_mode = "real_time"
-                    await self.tts.speak_text("11好的，您可以随时发出语音指令。", wait=True)
+                    await self.tts.speak_text("好的，您可以随时发出语音指令。", wait=True)
                     logging.info("🎵 设置模式: 实时交互")
                 elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以"]):
                     # 继续使用timer_waiting模式并重启定时器
                     self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
-                    await self.tts.speak_text("11好的，将在一分钟后再次询问。", wait=True)
+                    await self.tts.speak_text("好的，将在一分钟后再次询问。", wait=True)
                     logging.info("🎵 设置模式: 继续定时提醒")
                 else:
                     # 默认保持当前模式并重启定时器
                     self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
-                    await self.tts.speak_text("11好的，将在一分钟后再次询问。", wait=True)
+                    await self.tts.speak_text("好的，将在一分钟后再次询问。", wait=True)
                     logging.info("🎵 设置模式: 继续定时提醒")
         except asyncio.CancelledError:
             logging.info("🎵 定时提醒任务被取消")
@@ -403,14 +407,14 @@ class SweetPotatoChatbox:
         # 根据音乐交互模式决定是否询问
         if self.music_interaction_mode == "normal" or self.music_interaction_mode == "real_time":
             # 提示文本
-            prompt_text = "11请问您有什么关于甘薯的问题？" if self.first_interaction else "11" + random.choice(self.follow_up_prompts)
+            prompt_text = "请问您有什么关于甘薯的问题？" if self.first_interaction else random.choice(self.follow_up_prompts)
             self.first_interaction = False
             
             try:
                 await self.tts.speak_text(prompt_text, wait=True)
             except Exception as e:
                 logging.error(f"⚠️ 语音提示失败: {e}")
-                print(prompt_text.replace("11", ""))
+                print(prompt_text)
             
             await asyncio.sleep(0.3)
             await self.clear_audio_buffer()
@@ -432,7 +436,7 @@ class SweetPotatoChatbox:
             else:
                 # 音乐播放完成，切换到正常模式
                 self.music_interaction_mode = "normal"
-                await self.tts.speak_text("11音乐播放完成，现在可以提问了。", wait=True)
+                await self.tts.speak_text("音乐播放完成，现在可以提问了。", wait=True)
                 await self.clear_audio_buffer()
         
         # 显示监听指示器
@@ -445,7 +449,15 @@ class SweetPotatoChatbox:
         self.animation_manager.stop_current()
         
         # 检查语音识别结果
-        if  question_result=="" or 'result' not in question_result or not question_result['result'] or question_result=="嗯嗯" or question_result=="嗯嗯嗯嗯" or question_result=="嗯嗯嗯":
+        if (not question_result or 
+            'result' not in question_result or 
+            not question_result['result'] or  # 处理空列表情况
+            (question_result['result'] and len(question_result['result']) == 0) or  # 显式检查空列表
+            (question_result['result'] and len(question_result['result']) > 0 and question_result['result'][0] == "") or  # 检查空字符串
+            (question_result['result'] and len(question_result['result']) > 0 and question_result['result'][0] in [
+                "嗯嗯。", "嗯嗯嗯嗯。", "嗯嗯嗯。", "啊？","嗯嗯嗯嗯嗯。","嗯嗯嗯嗯嗯嗯。","嗯嗯嗯嗯嗯嗯嗯。" 
+                # 其他无意义词语...
+            ])):
             logging.info("❌ 未检测到有效语音输入")
             print("❌ 未检测到有效语音输入")
 
@@ -458,10 +470,7 @@ class SweetPotatoChatbox:
         logging.info(f"💬 问题: {question}")
         self.current_question_start_time = time.time()
 
-
-    
-        
-        if any(word in question.lower() for word in ["拜拜", "再见", "退出"]):
+        if any(word in question.lower() for word in [ "拜拜", "再见", "退出"]):
             logging.info("="*80)
             logging.info(f"🚪 收到退出命令: '{question}'")
             logging.info("="*80)
@@ -471,7 +480,7 @@ class SweetPotatoChatbox:
                 self.music_timer_task.cancel()
             
             try:
-                await self.tts.speak_text("11好的，感谢使用甘薯知识助手，再见！", wait=True)
+                await self.tts.speak_text("好的，感谢使用甘薯知识助手，再见！", wait=True)
             except:
                 print("👋 感谢使用甘薯知识助手，再见！")
                 
@@ -498,6 +507,88 @@ class SweetPotatoChatbox:
 
         # 如果不是音乐命令，继续处理为普通问答
         return question
+
+    async def process_streaming_answer(self, question):
+        """处理流式回答并同步进行语音合成"""
+        # 文本缓冲区
+        text_buffer = ""
+        # 计算缓冲区中标点符号的数量
+        punctuation_count = 0
+        # 设置标点符号阈值，达到这个数量才发送
+        punctuation_threshold = 2  # 可以调整为3或4
+        
+        # 重置当前答案
+        self.current_answer = ""
+        
+        # 显示思考动画
+        self.animation_manager.start_animation("正在思考")
+        
+        first_chunk = True
+        search_animation_started = False
+        
+        try:
+            # 流式生成回答并同步进行语音合成
+            async for chunk in self.qa.ask_stream(question):
+                # 处理搜索提示
+                if first_chunk and chunk.startswith("正在执行网络搜索任务"):
+                    await self.tts.speak_text("正在开启网络搜索任务", wait=False)
+                    # 切换到搜索动画，只切换一次
+                    if not search_animation_started:
+                        self.animation_manager.start_animation("执行网络搜索")
+                        search_animation_started = True
+                    first_chunk = False
+                    continue
+                else:
+                    if first_chunk:
+                        # 停止思考动画，开始输出答案
+                        self.animation_manager.stop_current()
+                        print(f"\n💡 {self.recognized_user}，关于'{question}'，")
+                        first_chunk = False
+                
+                # 累积答案
+                self.current_answer += chunk
+                # 实时显示文字（不换行）
+                print(chunk, end="", flush=True)
+                
+                # 将新块添加到缓冲区
+                text_buffer += chunk
+                
+                # 计算当前块中的标点符号数量
+                new_punctuations = len(re.findall(r'[。.!?！？;；]', chunk))
+                punctuation_count += new_punctuations
+                
+                # 条件：达到标点符号阈值或缓冲区足够长
+                if (punctuation_count >= punctuation_threshold and len(text_buffer) >= 25) or len(text_buffer) > 80:
+                    if text_buffer.strip():
+                        # 异步发送到TTS，不等待
+                        await self.tts.speak_text(text_buffer, wait=False)
+                    
+                    # 重置缓冲区和计数器
+                    text_buffer = ""
+                    punctuation_count = 0
+                
+                # 给UI渲染的时间
+                await asyncio.sleep(0.01)
+            
+            # 处理剩余的文本缓冲区
+            if text_buffer.strip():
+                await self.tts.speak_text(text_buffer, wait=False)
+            
+            print()  # 换行
+            
+            # 等待所有语音播放完成
+            await self.tts.wait_until_done()
+            
+            # 记录对话
+            response_time = time.time() - self.current_question_start_time
+            await self.conversation_manager.add_conversation_entry(question, self.current_answer, response_time)
+            await self.conversation_manager.save_tracking_data()
+            
+        except Exception as e:
+            # 确保停止动画
+            self.animation_manager.stop_current()
+            logging.error(f"❌ 处理流式回答时出错: {e}")
+            print(f"\n❌ 处理问题时出错: {e}")
             
     async def run(self):
         """运行主循环"""
@@ -524,7 +615,7 @@ class SweetPotatoChatbox:
         try:
             # 初始欢迎语
             try:
-                await self.tts.speak_text(f"11{self.recognized_user}，甘薯知识问答系统已启动。", wait=True)
+                await self.tts.speak_text(f"{self.recognized_user}，甘薯知识问答系统已启动。", wait=True)
                 await asyncio.sleep(0.5)
                 await self.clear_audio_buffer()
             except Exception as e:
@@ -541,57 +632,8 @@ class SweetPotatoChatbox:
                 
                 # 处理问题并回答
                 if question:
-                    try:
-                        # 统一的思考动画
-                        self.animation_manager.start_animation("正在思考")
-        
-                        first_chunk = True
-                        full_answer = ""
-                        search_animation_started = False
-                        
-                        # 将上下文传递给 ask_stream 方法
-                        async for chunk in self.qa.ask_stream(question):
-                            if first_chunk and chunk.startswith("11正在执行网络搜索任务"):
-                                await self.tts.speak_text("正在开启网络搜索任务",wait=False)
-                                # 切换到搜索动画，只切换一次
-                                if not search_animation_started:
-                                    self.animation_manager.start_animation("执行网络搜索")
-                                    search_animation_started = True
-                                
-                               
-                                first_chunk = False
-                                continue
-                            else:
-                                if first_chunk:
-                                    first_chunk = False
-                                full_answer += chunk
-                        
-                        # 停止加载动画
-                        self.animation_manager.stop_current()
-                        
-                        response_time = time.time() - self.current_question_start_time
-                        
-                        # 异步记录对话
-                        asyncio.create_task(
-                            self.conversation_manager.add_conversation_entry(
-                                question, full_answer, response_time
-                            )
-                        )
-            
-                        # 播放答案
-                        if full_answer:
-                            logging.info(f"💡 答案: {full_answer}")
-                            
-                            try:
-                                await self.tts.speak_text(full_answer, wait=False)
-                            except Exception as e:
-                                logging.error(f"⚠️ 播放答案失败: {e}")
-                                print(f"⚠️ 播放答案失败: {e}")
-                                
-                    except Exception as e:
-                        self.animation_manager.stop_current()
-                        logging.error(f"❌ 处理问题时出错: {e}")
-                        print(f"❌ 处理问题时出错: {e}")
+                    # 使用新的流式处理方法
+                    await self.process_streaming_answer(question)
                     
         except KeyboardInterrupt:
             logging.info("⌨️ 收到键盘中断信号")
@@ -634,7 +676,7 @@ class SweetPotatoChatbox:
 
             if self.tts and not self.shutdown_event.is_set():
                 try:
-                    await self.tts.speak_text("11感谢使用甘薯知识助手再见！", wait=True)
+                    await self.tts.speak_text("感谢使用甘薯知识助手再见！", wait=True)
                 except Exception as e:
                     logging.error(f"⚠️ 播放告别语音失败: {e}")
             
