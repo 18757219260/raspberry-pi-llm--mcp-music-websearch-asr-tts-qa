@@ -27,16 +27,15 @@ class TTSStreamer:
         self._last_audio_time = 0
 
     def preprocess_text(self, text):
-        """预处理文本，替换标点符号"""
+        """预处理文本，保留更多原始标点结构"""
+        # 只替换中文标点为对应的英文标点，不全部替换为逗号
         text = text.replace("，", ",")
-        text = text.replace("。", ",")
+        text = text.replace("。", ".")  # 保留句号的结构
         text = text.replace("、", ",")
-        text = text.replace("；", ",")
-        text = text.replace("：", ",")
-        text = text.replace("*", ',')
-        text = text.replace(".", ',')
-        text = text.replace("#", ',')
-        text = text.replace("？", ',')
+        text = text.replace("；", ";")  # 保留分号
+        text = text.replace("：", ":")  # 保留冒号
+        text = text.replace("？", "?")  # 保留问号
+        text = text.replace("！", "!")  # 保留感叹号
         text = re.sub(r'[\x00-\x1F\x7F]', '', text)
         return text
 
@@ -127,7 +126,7 @@ class TTSStreamer:
                             
                             # 优化延迟策略 - 更准确的估算
                             text_length = len(text)
-                            base_delay = 0.15  
+                            base_delay = 0.18  # 从0.15调整为0.18
                             min_delay = 0.8    
                             max_delay = 8.0    
                             
@@ -172,31 +171,43 @@ class TTSStreamer:
             self.speech_task = None
 
     async def speak_text(self, text, wait=False):
-        """流式处理文本"""
+        """流式处理文本，使用更智能的句子分割"""
         text = self.preprocess_text(text)
         
-        # 简单分段，不要太复杂
+        # 智能分段 - 在自然断句点分割
         segments = []
-        max_length = 50  # 每段最大长度
+        # 根据句子结束标点（句号、问号、感叹号、分号）或较长的逗号分句进行分段
+        sentence_pattern = r'(?<=[.!?;])\s+|(?<=,)\s+(?=\S{5,})'
+        parts = re.split(sentence_pattern, text)
         
-        # 按逗号分割
-        parts = text.split(',')
-        current_segment = ""
+        max_length = 60  # 增加最大长度，允许更完整的句子
         
+        # 进一步处理过长的段落
         for part in parts:
-            if len(current_segment) + len(part) > max_length and current_segment:
-                segments.append(current_segment.strip())
-                current_segment = part
+            if len(part) <= max_length:
+                segments.append(part)
             else:
-                current_segment += part + ","
+                # 处理过长的段落，尝试在逗号处分割
+                comma_parts = part.split(',')
+                current_segment = ""
                 
-        if current_segment:
-            segments.append(current_segment.strip())
-            
+                for comma_part in comma_parts:
+                    if len(current_segment) + len(comma_part) > max_length and current_segment:
+                        segments.append(current_segment.strip())
+                        current_segment = comma_part
+                    else:
+                        if current_segment:
+                            current_segment += ", " + comma_part
+                        else:
+                            current_segment = comma_part
+                
+                if current_segment:
+                    segments.append(current_segment.strip())
+        
         # 如果没有分段，就作为整体
         if not segments:
             segments = [text]
-            
+        
         # 确保处理器运行
         await self.start_speech_processor()
         
@@ -204,14 +215,11 @@ class TTSStreamer:
         for segment in segments:
             if segment.strip():
                 await self.speech_queue.put(segment)
-                
+        
         # 如果需要等待完成
         if wait:
             await self.wait_until_done()
     
-    # Optimized wait_until_done Method
-
-
     async def wait_until_done(self):
         """等待所有语音播放完成 - 使用更智能的策略"""
         # 等待队列清空
