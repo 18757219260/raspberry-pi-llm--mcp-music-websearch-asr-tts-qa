@@ -17,10 +17,11 @@
   `opencv` 人脸识别
 
 - **语音输入与输出**  
-   `百度语音识别API` 和 `edge_tts` 语音识别、语音合成
-    `qwenAPI`和本地llama.cpp `text2vec_base_chinese_q8`
-  **终端UI显示**
-  去除opencv，保留asr,tts,qa_model的ui
+   `百度语音识别API` 和 `edge_tts` 实时语音识别、流式语音输出
+  `qwenAPI` 和本地向量化模型 `text2vec_base_chinese_q8`
+  `mcp`接入`音乐播放`和`网络搜索`功能，支持播放 `继续播放` `下一首` `上一首` `暂停` 
+  `终端ui`界面
+
 
 
 
@@ -40,6 +41,8 @@ pickle
 pyaudio
 webrtcvad
 baidu-aip
+mcp-server
+pyside6
 ```
 
 ```

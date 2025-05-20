@@ -185,7 +185,7 @@ def play_music(song_name: str) -> str:
                 pause = False
                 current_song = target_song
             
-            return {"status": f"歌曲【{song_name} - {artist_name}】已开始播放。"}
+            return 
             
         except Exception as e:
             playing = False
@@ -246,7 +246,7 @@ def play_by_index(index: int) -> str:
             current_song = song
             current_index = idx
         
-        return {"status": f"歌曲【{song['name']} - {song['artist']}】已开始播放。"}
+        return  
     
     except Exception as e:
         logger.error(f"播放失败: {e}")

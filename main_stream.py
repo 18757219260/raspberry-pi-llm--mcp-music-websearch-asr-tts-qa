@@ -207,7 +207,7 @@ class SweetPotatoChatbox:
 
             # MCP初始化
             self.animation_manager.start_animation("初始化MCP服务")
-            self.mcp_connected = await self.tts.connect_to_mcp()
+           
             self.animation_manager.stop_current()
             
             if self.mcp_connected:
@@ -253,45 +253,45 @@ class SweetPotatoChatbox:
         except Exception as e:
             logging.warning(f"⚠️ 清理音频缓冲区时出错: {e}")
 
-    async def get_music_preference(self,result):
-        """询问用户对音乐播放的偏好设置"""
-        logging.info("🎵 询问用户音乐播放偏好")
+    # async def get_music_preference(self,result):
+    #     """询问用户对音乐播放的偏好设置"""
+    #     logging.info("🎵 询问用户音乐播放偏好")
         
-        # 询问用户偏好
-        preference_prompt = f"{result}您希望等待播放完成再问问题，还是马上继续对话？"
+    #     # 询问用户偏好
+    #     preference_prompt = f"{result}您希望等待播放完成再问问题，还是马上继续对话？"
         
-        try:
-            await self.tts.speak_text(preference_prompt, wait=True)
-        except Exception as e:
-            logging.error(f"⚠️ 播放偏好询问失败: {e}")
-            print("🎵 音乐已开始播放，您希望等待播放完成再问问题，还是马上继续对话？")
+    #     try:
+    #         await self.tts.speak_text(preference_prompt, wait=True)
+    #     except Exception as e:
+    #         logging.error(f"⚠️ 播放偏好询问失败: {e}")
+    #         print("🎵 音乐已开始播放，您希望等待播放完成再问问题，还是马上继续对话？")
         
-        await asyncio.sleep(0.5)
-        await self.clear_audio_buffer()
+    #     await asyncio.sleep(0.5)
+    #     await self.clear_audio_buffer()
         
-        # 显示监听指示器
-        self.animation_manager.start_animation("正在聆听您的选择")
+    #     # 显示监听指示器
+    #     self.animation_manager.start_animation("正在聆听您的选择")
         
-        # 获取用户回答
-        preference_result = self.asr.real_time_recognition()
-        self.animation_manager.stop_current()
+    #     # 获取用户回答
+    #     preference_result = self.asr.real_time_recognition()
+    #     self.animation_manager.stop_current()
         
-        if not preference_result or 'result' not in preference_result or not preference_result['result']:
-            logging.info("❌ 未检测到有效回答，默认选择马上继续")
-            return "immediate"
+    #     if not preference_result or 'result' not in preference_result or not preference_result['result']:
+    #         logging.info("❌ 未检测到有效回答，默认选择马上继续")
+    #         return "immediate"
         
-        user_choice = preference_result["result"][0].lower()
-        logging.info(f"🎵 用户音乐偏好选择: {user_choice}")
+    #     user_choice = preference_result["result"][0].lower()
+    #     logging.info(f"🎵 用户音乐偏好选择: {user_choice}")
         
-        # 解析用户选择
-        if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完","是的","没错","好","好的","接着","听","放"]):
-            return "wait"
-        elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在","提问","快","推进"]):
-            return "immediate"
-        elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以","知道"]):
-            return "uncertain"
-        else:
-            return "uncertain"
+    #     # 解析用户选择
+    #     if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完","是的","没错","好","好的","接着","听","放"]):
+    #         return "wait"
+    #     elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在","提问","快","推进"]):
+    #         return "immediate"
+    #     elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以","知道"]):
+    #         return "uncertain"
+    #     else:
+    #         return "uncertain"
 
     async def handle_music_interaction(self, music_intent):
         """处理音乐相关的交互逻辑"""
@@ -306,93 +306,281 @@ class SweetPotatoChatbox:
         await self.conversation_manager.add_conversation_entry(question, result, response_time)
         await self.conversation_manager.save_tracking_data()
         
-        # 如果是播放音乐命令，询问用户偏好
+        # 处理播放命令 - 进入音乐模式
         if music_intent.get("command") == "播放":
-            # 先播放音乐操作结果
+            # 播放音乐操作结果
             if result:
                 clean_result = result.replace("11", "").strip()
-                # await self.tts.speak_text(f"{clean_result}", wait=True)
+                await self.tts.speak_text(f"{clean_result}", wait=True)
             
-            # 询问用户偏好
-            preference = await self.get_music_preference(result)
+            # 进入音乐模式
+            self.music_interaction_mode = "music_mode"
+            logging.info("🎵 已进入音乐模式，将每5秒检查一次语音命令")
             
-            if preference == "wait":
-                self.music_interaction_mode = "waiting"
-                await self.tts.speak_text("将等待音乐播放完成后再继续。", wait=True)
-                logging.info("🎵 设置模式: 等待音乐播放完成")
-                
-            elif preference == "immediate":
-                self.music_interaction_mode = "real_time"
-                await self.tts.speak_text("好的，您可以随时发出语音指令。", wait=True)
-                logging.info("🎵 设置模式: 实时交互")
-                
-            elif preference == "uncertain":
-                # 创建一个专门用于定时器的新模式
-                self.music_interaction_mode = "timer_waiting"  # <-- 修改此处
-                await self.tts.speak_text("好的，将在一分钟后询问您是否有问题。", wait=True)
-                logging.info("🎵 设置模式: 定时提醒")
-                
-                # 启动定时器任务
-                self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
+            # 启动音乐监听任务
+            self.music_listen_task = asyncio.create_task(self.music_mode_listening())
+            # 处理播放列表命令 - 只打印不读出
+        elif music_intent.get("command") == "播放列表":
+            if result:
+                clean_result = result.replace("11", "").strip()
+                # 只打印到控制台，不进行语音播报
+                print(f"\n📋 当前播放列表:\n{clean_result}")
+                # 简短提示已显示播放列表
+                # await self.tts.speak_text("播放列表已显示", wait=True)
+        
+        # 处理暂停命令 - 暂停后自动进入问答模式
+        elif music_intent.get("command") == "暂停":
+            # 播放操作结果
+            if result:
+                clean_result = result.replace("11", "").strip()
+                await self.tts.speak_text(f"{clean_result}", wait=True)
+            
+            # 音乐已暂停，切换到普通问答模式
+            self.music_interaction_mode = "normal"
+            logging.info("🎵 音乐已暂停，切换到问答模式")
+        
+        # 处理继续播放命令 - 从问答模式返回音乐模式
+        elif music_intent.get("command") == "继续":
+            # 播放操作结果
+            if result:
+                clean_result = result.replace("11", "").strip()
+                await self.tts.speak_text(f"{clean_result}", wait=True)
+            
+            # 重新进入音乐模式
+            self.music_interaction_mode = "music_mode"
+            logging.info("🎵 音乐继续播放，重新进入音乐模式")
+            
+            # 启动音乐监听任务
+            self.music_listen_task = asyncio.create_task(self.music_mode_listening())
+        
+        # 其他音乐命令 - 仅播放结果，保持当前模式
         else:
-            # 非播放音乐命令，播放操作结果
             if result:
                 clean_result = result.replace("11", "").strip()
-                await self.tts.speak_text(f"{clean_result}", wait=False)
+                await self.tts.speak_text(f"{clean_result}", wait=True)
         
         return True
-
-    async def music_timer_reminder(self):
+    
+    async def music_mode_listening(self):
+        """音乐模式：无间隙持续监听用户指令"""
         try:
-            await asyncio.sleep(60)
+            logging.info("🎵 开始无间隙音乐模式监听")
             
-            # 定时器完成后不直接切换到normal模式，而是再次询问用户偏好
-            if not self.shutdown_event.is_set() and self.music_interaction_mode == "timer_waiting":
-                # 询问用户是否继续等待还是开始提问
-                await self.tts.speak_text("音乐正在播放，您希望等待播放完成再问问题，还是现在就开始提问？", wait=True)
+            while self.music_interaction_mode == "music_mode" and not self.shutdown_event.is_set():
+                # 检查播放器状态
+                player_status = self.qa.get_player_status()
+                if player_status == "stopped":
+                    # 音乐播放完毕，自动退出音乐模式
+                    logging.info("🎵 音乐播放已结束，退出音乐模式")
+                    self.music_interaction_mode = "normal"
+                    await self.tts.speak_text("音乐播放已结束。", wait=True)
+                    break
                 
-                # 清理音频缓冲区
-                await self.clear_audio_buffer()
+                # 直接开始语音识别 - 不清理缓冲区
+                # 这确保我们始终在监听，无盲区
+                logging.info("🎵 持续监听音乐命令中...")
+                command_result = self.asr.real_time_recognition()
                 
-                # 显示监听指示器
-                self.animation_manager.start_animation("正在聆听您的选择")
+                # 处理任何检测到的命令
+                if (command_result and 
+                    'result' in command_result and 
+                    command_result['result'] and 
+                    len(command_result['result']) > 0 and 
+                    command_result['result'][0].strip()):
+                    
+                    command = command_result["result"][0]
+                    logging.info(f"🎵 音乐模式中检测到指令: {command}")
+                    
+                    # 检查是否为音乐相关指令
+                    music_intent = self.qa.detect_music_intent(command)
+                    if music_intent:
+                        # 记录开始时间
+                        self.current_question_start_time = time.time()
+                        
+                        # 处理音乐指令
+                        result = await self.qa.handle_music_command(music_intent)
+                        
+                        # 记录对话
+                        response_time = time.time() - self.current_question_start_time
+                        question = music_intent.get("song_name", "音乐操作")
+                        await self.conversation_manager.add_conversation_entry(question, result, response_time)
+                        await self.conversation_manager.save_tracking_data()
+                        
+                        # 播放操作结果
+                        if result:
+                            clean_result = result.replace("11", "").strip()
+                            await self.tts.speak_text(f"{clean_result}", wait=True)
+                        
+                        # 特殊命令处理
+                        if music_intent.get("command") in ["暂停", "停止", "退出"]:
+                            # 退出音乐模式
+                            self.music_interaction_mode = "normal"
+                            logging.info(f"🎵 由于{music_intent.get('command')}命令退出音乐模式")
+                            break
+                    else:
+                        # 非音乐命令，忽略处理
+                        logging.info("🎵 在音乐模式中检测到非音乐命令，忽略处理")
                 
-                # 获取用户回答
-                preference_result = self.asr.real_time_recognition()
-                self.animation_manager.stop_current()
+                # 不在识别循环之间添加任何延迟
+                # 立即开始下一次识别，实现无间隙监听
                 
-                if not preference_result or 'result' not in preference_result or not preference_result['result']:
-                    logging.info("❌ 未检测到有效回答，继续等待")
-                    # 如果没有有效回答，继续等待
-                    self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
-                    return
-                
-                user_choice = preference_result["result"][0].lower()
-                logging.info(f"🎵 用户音乐偏好选择: {user_choice}")
-                
-                # 解析用户选择
-                if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完", "是的", "没错", "好", "好的"]):
-                    self.music_interaction_mode = "waiting"
-                    await self.tts.speak_text("好的，将等待音乐播放完成后再继续。", wait=True)
-                    logging.info("🎵 设置模式: 等待音乐播放完成")
-                elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在", "提问", "快", "推进"]):
-                    self.music_interaction_mode = "real_time"
-                    await self.tts.speak_text("好的，您可以随时发出语音指令。", wait=True)
-                    logging.info("🎵 设置模式: 实时交互")
-                elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以"]):
-                    # 继续使用timer_waiting模式并重启定时器
-                    self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
-                    await self.tts.speak_text("好的，将在一分钟后再次询问。", wait=True)
-                    logging.info("🎵 设置模式: 继续定时提醒")
-                else:
-                    # 默认保持当前模式并重启定时器
-                    self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
-                    await self.tts.speak_text("好的，将在一分钟后再次询问。", wait=True)
-                    logging.info("🎵 设置模式: 继续定时提醒")
         except asyncio.CancelledError:
-            logging.info("🎵 定时提醒任务被取消")
+            logging.info("🎵 音乐监听任务被取消")
         except Exception as e:
-            logging.error(f"🎵 定时提醒任务出错: {e}")
+            logging.error(f"🎵 音乐监听任务出错: {e}")
+            # 发生错误时恢复到正常模式
+            self.music_interaction_mode = "normal"
+
+    # async def continuous_music_listening(self):
+    #     """在音乐播放过程中持续监听用户指令"""
+    #     try:
+    #         logging.info("🎵 开始持续音乐监听模式")
+            
+    #         # 启动持续识别
+    #         recognition_started = False
+    #         last_result_time = time.time()
+            
+    #         while self.music_interaction_mode == "music_listening" and not self.shutdown_event.is_set():
+    #             # 检查播放器状态
+    #             player_status = self.qa.get_player_status()
+    #             if player_status == "stopped" and self.music_interaction_mode == "music_listening":
+    #                 # 音乐已停止，退出音乐模式
+    #                 logging.info("🎵 音乐播放已停止，退出音乐模式")
+    #                 self.music_interaction_mode = "normal"
+    #                 await self.tts.speak_text("音乐播放已结束，退出音乐模式。", wait=True)
+    #                 break
+                
+    #             # 启动ASR持续监听（如果尚未启动）
+    #             if not recognition_started:
+    #                 # 清理音频缓冲区
+    #                 await self.clear_audio_buffer()
+    #                 # 启动持续监听
+    #                 self.asr.start_continuous_recognition()
+    #                 recognition_started = True
+    #                 logging.info("🎵 已启动持续语音识别")
+                
+    #             # 检查是否有新的识别结果（约每5秒检查一次）
+    #             current_time = time.time()
+    #             if current_time - last_result_time >= 5.0:
+    #                 # 获取最新的识别结果
+    #                 command_result = self.asr.get_latest_recognition_result()
+    #                 last_result_time = current_time
+                    
+    #                 # 检查语音识别结果
+    #                 if (command_result and 
+    #                     'result' in command_result and 
+    #                     command_result['result'] and
+    #                     len(command_result['result']) > 0 and
+    #                     command_result['result'][0] != ""):
+                        
+    #                     command = command_result["result"][0]
+    #                     logging.info(f"🎵 音乐模式中检测到指令: {command}")
+                        
+    #                     # 检查是否为音乐相关指令
+    #                     music_intent = self.qa.detect_music_intent(command)
+    #                     if music_intent:
+    #                         # 获取开始时间
+    #                         self.current_question_start_time = time.time()
+                            
+    #                         # 暂停持续识别处理命令
+    #                         self.asr.pause_continuous_recognition()
+                            
+    #                         # 处理音乐指令
+    #                         result = await self.qa.handle_music_command(music_intent)
+                            
+    #                         # 记录对话
+    #                         response_time = time.time() - self.current_question_start_time
+    #                         question = music_intent.get("song_name", "音乐操作")
+    #                         await self.conversation_manager.add_conversation_entry(question, result, response_time)
+    #                         await self.conversation_manager.save_tracking_data()
+                            
+    #                         # 播放操作结果
+    #                         if result:
+    #                             clean_result = result.replace("11", "").strip()
+    #                             await self.tts.speak_text(f"{clean_result}", wait=True)
+                            
+    #                         # 处理特殊命令
+    #                         if music_intent.get("command") == "停止" or music_intent.get("command") == "退出":
+    #                             # 退出音乐模式
+    #                             self.music_interaction_mode = "normal"
+    #                             await self.tts.speak_text("已退出音乐模式。", wait=True)
+    #                             logging.info("🎵 通过停止命令退出音乐模式")
+    #                             break
+                            
+    #                         # 恢复持续识别
+    #                         self.asr.resume_continuous_recognition()
+    #                         recognition_started = True
+                    
+    #             # 短暂休眠以减少CPU使用
+    #             await asyncio.sleep(0.1)
+            
+    #         # 停止持续识别
+    #         if recognition_started:
+    #             self.asr.stop_continuous_recognition()
+    #             logging.info("🎵 已停止持续语音识别")
+            
+    #     except asyncio.CancelledError:
+    #         logging.info("🎵 音乐监听任务被取消")
+    #         # 确保停止持续识别
+    #         self.asr.stop_continuous_recognition()
+    #     except Exception as e:
+    #         logging.error(f"🎵 音乐监听任务出错: {e}")
+    #         # 确保停止持续识别
+    #         self.asr.stop_continuous_recognition()
+    #         # 恢复正常模式
+    #         self.music_interaction_mode = "normal"
+
+    # async def music_timer_reminder(self):
+    #     try:
+    #         await asyncio.sleep(60)
+            
+    #         # 定时器完成后不直接切换到normal模式，而是再次询问用户偏好
+    #         if not self.shutdown_event.is_set() and self.music_interaction_mode == "timer_waiting":
+    #             # 询问用户是否继续等待还是开始提问
+    #             await self.tts.speak_text("音乐正在播放，您希望等待播放完成再问问题，还是现在就开始提问？", wait=True)
+                
+    #             # 清理音频缓冲区
+    #             await self.clear_audio_buffer()
+                
+    #             # 显示监听指示器
+    #             self.animation_manager.start_animation("正在聆听您的选择")
+                
+    #             # 获取用户回答
+    #             preference_result = self.asr.real_time_recognition()
+    #             self.animation_manager.stop_current()
+                
+    #             if not preference_result or 'result' not in preference_result or not preference_result['result']:
+    #                 logging.info("❌ 未检测到有效回答，继续等待")
+    #                 # 如果没有有效回答，继续等待
+    #                 self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
+    #                 return
+                
+    #             user_choice = preference_result["result"][0].lower()
+    #             logging.info(f"🎵 用户音乐偏好选择: {user_choice}")
+                
+    #             # 解析用户选择
+    #             if any(keyword in user_choice for keyword in ["等待", "等", "完成", "播放完", "是的", "没错", "好", "好的"]):
+    #                 self.music_interaction_mode = "waiting"
+    #                 await self.tts.speak_text("好的，将等待音乐播放完成后再继续。", wait=True)
+    #                 logging.info("🎵 设置模式: 等待音乐播放完成")
+    #             elif any(keyword in user_choice for keyword in ["立即", "继续", "马上", "现在", "提问", "快", "推进"]):
+    #                 self.music_interaction_mode = "real_time"
+    #                 await self.tts.speak_text("好的，您可以随时发出语音指令。", wait=True)
+    #                 logging.info("🎵 设置模式: 实时交互")
+    #             elif any(keyword in user_choice for keyword in ["不确定", "不知道", "随便", "都行", "都可以"]):
+    #                 # 继续使用timer_waiting模式并重启定时器
+    #                 self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
+    #                 await self.tts.speak_text("好的，将在一分钟后再次询问。", wait=True)
+    #                 logging.info("🎵 设置模式: 继续定时提醒")
+    #             else:
+    #                 # 默认保持当前模式并重启定时器
+    #                 self.music_timer_task = asyncio.create_task(self.music_timer_reminder())
+    #                 await self.tts.speak_text("好的，将在一分钟后再次询问。", wait=True)
+    #                 logging.info("🎵 设置模式: 继续定时提醒")
+    #     except asyncio.CancelledError:
+    #         logging.info("🎵 定时提醒任务被取消")
+    #     except Exception as e:
+    #         logging.error(f"🎵 定时提醒任务出错: {e}")
 
     async def process_user_input(self):
         """处理用户语音输入"""
@@ -404,9 +592,9 @@ class SweetPotatoChatbox:
         # 清空音频缓冲区
         await self.clear_audio_buffer()
         
-        # 根据音乐交互模式决定是否询问
-        if self.music_interaction_mode == "normal" or self.music_interaction_mode == "real_time":
-            # 提示文本
+        # 根据当前模式进行处理
+        if self.music_interaction_mode == "normal":
+            # 正常问答模式：提示用户问题
             prompt_text = "请问您有什么关于甘薯的问题？" if self.first_interaction else random.choice(self.follow_up_prompts)
             self.first_interaction = False
             
@@ -418,49 +606,33 @@ class SweetPotatoChatbox:
             
             await asyncio.sleep(0.3)
             await self.clear_audio_buffer()
-
-
-        elif self.music_interaction_mode == "timer_waiting":
-            # 简单等待并返回None以循环而不提示
-            await asyncio.sleep(2)
+            
+            # 显示监听指示器
+            self.animation_manager.start_animation("正在聆听")
+            
+            # 执行语音识别
+            question_result = self.asr.real_time_recognition()
+            
+            # 停止监听指示器
+            self.animation_manager.stop_current()
+            
+        elif self.music_interaction_mode == "music_mode":
+            # 音乐模式：跳过提问，交由music_mode_listening处理
+            await asyncio.sleep(0.5)
             return None
-        
-        elif self.music_interaction_mode == "waiting":
-            # 等待模式：检查音乐是否还在播放
-            player_status = self.qa.get_player_status()
-            if player_status == "playing":
-                # 音乐还在播放，继续等待
-                logging.info("🎵 音乐正在播放，继续等待...")
-                await asyncio.sleep(2)
-                return None
-            else:
-                # 音乐播放完成，切换到正常模式
-                self.music_interaction_mode = "normal"
-                await self.tts.speak_text("音乐播放完成，现在可以提问了。", wait=True)
-                await self.clear_audio_buffer()
-        
-        # 显示监听指示器
-        self.animation_manager.start_animation("正在聆听")
-        
-        # 执行语音识别
-        question_result = self.asr.real_time_recognition()
-        
-        # 停止监听指示器
-        self.animation_manager.stop_current()
         
         # 检查语音识别结果
         if (not question_result or 
             'result' not in question_result or 
-            not question_result['result'] or  # 处理空列表情况
-            (question_result['result'] and len(question_result['result']) == 0) or  # 显式检查空列表
-            (question_result['result'] and len(question_result['result']) > 0 and question_result['result'][0] == "") or  # 检查空字符串
-            (question_result['result'] and len(question_result['result']) > 0 and question_result['result'][0] in [
+            not question_result['result'] or  
+            len(question_result['result']) == 0 or  
+            question_result['result'][0] == "" or  
+            question_result['result'][0] in [
                 "嗯嗯。", "嗯嗯嗯嗯。", "嗯嗯嗯。", "啊？","嗯嗯嗯嗯嗯。","嗯嗯嗯嗯嗯嗯。","嗯嗯嗯嗯嗯嗯嗯。" 
-                # 其他无意义词语...
-            ])):
+            ]):
             logging.info("❌ 未检测到有效语音输入")
             print("❌ 未检测到有效语音输入")
-
+            
             # 不进行TTS提示，直接等待10秒后继续
             logging.info("🕙 等待10秒后继续监听...")
             await asyncio.sleep(10)
@@ -470,14 +642,15 @@ class SweetPotatoChatbox:
         logging.info(f"💬 问题: {question}")
         self.current_question_start_time = time.time()
 
-        if any(word in question.lower() for word in [ "拜拜", "再见", "退出"]):
+        # 处理退出命令
+        if any(word in question.lower() for word in ["拜拜", "再见", "退出"]):
             logging.info("="*80)
             logging.info(f"🚪 收到退出命令: '{question}'")
             logging.info("="*80)
             
-            # 取消定时器任务
-            if self.music_timer_task and not self.music_timer_task.done():
-                self.music_timer_task.cancel()
+            # 取消音乐监听任务
+            if hasattr(self, 'music_listen_task') and self.music_listen_task and not self.music_listen_task.done():
+                self.music_listen_task.cancel()
             
             try:
                 await self.tts.speak_text("好的，感谢使用甘薯知识助手，再见！", wait=True)
@@ -491,11 +664,11 @@ class SweetPotatoChatbox:
         if question:
             music_intent = self.qa.detect_music_intent(question)
             if music_intent:
-                # 取消之前的定时器任务
-                if self.music_timer_task and not self.music_timer_task.done():
-                    self.music_timer_task.cancel()
+                # 取消之前的音乐监听任务
+                if hasattr(self, 'music_listen_task') and self.music_listen_task and not self.music_listen_task.done():
+                    self.music_listen_task.cancel()
                 
-                # 使用统一的音乐处理动画
+                # 显示处理动画
                 self.animation_manager.start_animation("正在处理音乐请求")
                 
                 try:
@@ -531,7 +704,8 @@ class SweetPotatoChatbox:
             async for chunk in self.qa.ask_stream(question):
                 # 处理搜索提示
                 if first_chunk and chunk.startswith("正在执行网络搜索任务"):
-                    await self.tts.speak_text("正在开启网络搜索任务", wait=False)
+                    await self.tts.speak_text("正在开启网络搜索任务", wait=True)
+                    # await asyncio.sleep(0.5)
                     # 切换到搜索动画，只切换一次
                     if not search_animation_started:
                         self.animation_manager.start_animation("执行网络搜索")

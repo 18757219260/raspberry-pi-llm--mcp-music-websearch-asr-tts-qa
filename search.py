@@ -73,8 +73,8 @@ def get_search_status() -> str:
     try:
         # 测试搜索功能是否正常
         test_response = Application.call(
-            api_key='',
-            app_id='',
+            api_key='sk-08bb8f6bf6ad4bbd9f33913fb6b6e248',
+            app_id='8f171e98371244e381cbee6e56b560f6',
             prompt='测试'
         )
         

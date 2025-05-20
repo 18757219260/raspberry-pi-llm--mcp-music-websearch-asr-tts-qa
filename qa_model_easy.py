@@ -14,7 +14,6 @@ from qwen_agent.agents import Assistant
 from qwen_agent.tools.base import BaseTool, register_tool
 from conversation import ConversationManager
 
-# Apply nest_asyncio to prevent runtime errors with asyncio
 nest_asyncio.apply()
 
 logging.basicConfig(
@@ -117,6 +116,7 @@ class KnowledgeQA:
             "最新", "最近", "现在", "今天", "目前", "当前",
             "实时", "新闻", "热点", "天气", "股价", "比分",
             "排行", "趋势", "动态", "更新", "价格","明天","后天","昨天","前天","大后天","大前天","前几天","后几天","之后","你知道吗"
+        ,"月","号","年","天","那天"
         ]
 
     def _load_vectorstore_with_retry(self, max_retries=3):
@@ -155,12 +155,14 @@ class KnowledgeQA:
         
         # 首先检查特定的音乐控制命令（优先级更高）
         specific_commands = {
-            "播放列表": ["播放列表", "显示播放列表", "当前播放列表", "歌单", "列表","我想听"],
-            "下一首": ["下一首", "换一首", "下首歌", "播放下一首","换一首歌"],
-            "上一首": ["上一首", "前一首", "播放上一首"],
-            "暂停": ["暂停", "停下", "先停"],
-            "继续": ["继续", "恢复", "接着放"],
-            "停止": ["停止播放", "关闭音乐", "不听了", "停止"]
+            "播放列表": ["播放列表", "显示播放列表", "当前播放列表", "歌单", "列表", "有什么歌"],
+            "下一首": ["下一首", "换一首", "下首歌", "播放下一首", "换一首歌", "播放另一首", 
+                    "我想听其他的歌", "播放不同的歌", "换首歌", "不好听", "太难听了", 
+                    "换个风格", "这歌不好听", "换别的", "换一个", "不喜欢这首"],
+            "上一首": ["上一首", "前一首", "播放上一首", "返回上一首"],
+            "暂停": ["暂停", "停下", "先停", "停一下"],
+            "继续": ["继续", "恢复", "接着放", "再放", "继续播放"],
+            "停止": ["停止播放", "关闭音乐", "不听了", "停止", "关掉", "退出播放"]
         }
         
         # 检查特定命令
@@ -288,43 +290,66 @@ class KnowledgeQA:
         return "请提供要搜索的内容。"
     
     async def handle_music_command(self, intent):
-        """处理音乐相关命令 - 修正版"""
-        
+        """处理音乐相关命令"""
         command = intent.get("command")
         
-        if command == "播放":
-            song_name = intent.get("song_name", "")
-            if song_name:
-                # 调用MCP播放音乐
+        try:
+            # 处理播放命令
+            if command == "播放":
+                song_name = intent.get("song_name", "")
+                if not song_name:
+                    return "请告诉我您想听的歌曲名称"
+                    
+                # 异步执行播放命令
                 tool_result = await self.call_tool("netease_music-play_music", {"song_name": song_name})
                 
-                # 构建响应消息，但不阻塞等待TTS完成
-                if isinstance(tool_result, dict) and "status" in tool_result:
-                    return tool_result["status"] #+ " 您可以随时说暂停、下一首等控制播放。"
-                    
-                return f"正在为您播放{song_name}... "#您可以随时说暂停、下一首等控制播放。"
-            else:
-                return "请告诉我您想听的歌曲名称或歌手"
+                # 记录对话
+                response_time = time.time() - self.current_question_start_time if hasattr(self, 'current_question_start_time') else 0
+                if hasattr(self, 'conversation_manager'):
+                    await self.conversation_manager.add_conversation_entry(
+                        f"播放音乐: {song_name}", 
+                        str(tool_result), 
+                        response_time
+                    )
                 
-        elif command == "暂停":
-            tool_result = await self.call_tool("netease_music-pauseplay", {})
-            return str(tool_result)
+                # 返回播放结果
+                return f"正在为您播放{song_name}：{tool_result}"
+                
+            # 处理其他音乐控制命令
+            elif command in ["暂停", "继续", "停止", "下一首", "上一首", "播放列表"]:
+                # 为不同命令调用相应的工具
+                tool_mapping = {
+                    "暂停": ("netease_music-pauseplay", {}, "已暂停"),
+                    "继续": ("netease_music-unpauseplay", {}, "已继续播放"),
+                    "停止": ("netease_music-stopplay", {}, "已停止播放"),
+                    "下一首": ("netease_music-next_song", {}, "已切换到下一首"),
+                    "上一首": ("netease_music-previous_song", {}, "已切换到上一首"),
+                    "播放列表": ("netease_music-get_playlist", {}, "当前播放列表")
+                }
+                
+                tool_name, params, feedback = tool_mapping.get(command, (None, None, None))
+                
+                if tool_name:
+                    # 异步执行命令
+                    tool_result = await self.call_tool(tool_name, params)
+                    
+                    # 记录对话
+                    if hasattr(self, 'conversation_manager') and hasattr(self, 'current_question_start_time'):
+                        response_time = time.time() - self.current_question_start_time
+                        await self.conversation_manager.add_conversation_entry(
+                            f"音乐命令: {command}", 
+                            str(tool_result), 
+                            response_time
+                        )
+                    
+                    # 返回执行结果
+                    return f"{feedback}：{tool_result}"
             
-        elif command == "继续":
-            tool_result = await self.call_tool("netease_music-unpauseplay", {})
-            return str(tool_result)
-            
-        elif command == "停止":
-            tool_result = await self.call_tool("netease_music-stopplay", {})
-            return str(tool_result)
-            
-        elif command == "下一首":
-            tool_result = await self.call_tool("netease_music-next_song", {})
-            return str(tool_result)
-            
-        elif command == "播放列表":
-            tool_result = await self.call_tool("netease_music-get_playlist", {})
-            return str(tool_result)
+            return "未能识别的音乐命令"
+                
+        except Exception as e:
+            logging.error(f"处理音乐命令时出错: {e}")
+            return f"处理音乐命令时出现错误: {str(e)}"
     
     # 修正的流式回答方法 - 基于test.py的实现
     async def ask_stream(self, question, use_context=True, use_tools=True):
@@ -383,7 +408,7 @@ class KnowledgeQA:
                 return
 
             # 构建查询提示（按照test.py的方式）
-            query = "你是一个甘薯专家，请你以说话的标准回答，请你根据参考内容回答，回答输出为一段，回答内容简洁，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
+            query = "你是一个甘薯专家，请你以说话的标准回答,请你根据参考内容回答，回答输出为一段，回答内容简洁，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
             
             # 构建包含上下文的提示
             doc_context = "\n\n".join([d.page_content for d in docs])
