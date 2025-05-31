@@ -1,6 +1,8 @@
 import sys
 import asyncio
+import cv2  
 import time
+import os
 import re
 import json
 import random
@@ -20,9 +22,9 @@ import io
 import subprocess
 
 # 百度ASR API配置
-APP_ID = ''
-API_KEY = '' 
-SECRET_KEY = ''
+APP_ID = '118613302'
+API_KEY = '7hSl10mvmtaCndZoab0S3BXQ' 
+SECRET_KEY = 'Fv10TxiFLmWb4UTAdLeA2eaTIE56QtkW'
 
 # QA模型所需导入
 from langchain_community.vectorstores import FAISS
@@ -589,7 +591,7 @@ class KnowledgeQA:
         embedding_model_path="/home/wuye/vscode/raspberrypi_5/rasoberry/text2vec_base_chinese_q8.gguf",
         conversation_manager=None,
         model_name="qwen-turbo-latest",
-        api_key='',
+        api_key='sk-4ee9cb3d8d704b23a04abbba3ab19020',
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         mcp_config_path="mcp_server_config.json"
     ):
@@ -796,6 +798,440 @@ class KnowledgeQA:
         
         return None
     
+
+    def detect_camera_intent(self, question):
+        """优化的摄像头意图检测 - 降低误触发率"""
+        if not question:
+            return None
+            
+        question_lower = question.lower().strip()
+        
+        # 1. 首先检查是否包含明确的排除关键词
+        exclude_keywords = [
+            # 农业相关
+            "甘薯", "红薯", "地瓜", "种植", "栽培", "施肥", "病虫害",
+            "品种", "产量", "营养", "土壤", "灌溉", "收获", "储存",
+            # 搜索相关
+            "搜索", "查找", "查询", "搜一下", "查一下", "搜一搜",
+            "帮我查", "帮我搜", "请搜索", "请查找", "百度", "谷歌",
+            # 知识问答
+            "为什么", "怎么做", "如何", "什么原理", "解释", "说明",
+            "历史", "起源", "发展", "区别", "对比", "分析",
+            # 其他常见非视觉问题
+            "价格", "多少钱", "哪里买", "推荐", "建议", "评价",
+            "天气", "温度", "湿度", "时间", "日期", "新闻"
+        ]
+        
+        # 如果包含排除关键词，直接返回None
+        if any(keyword in question_lower for keyword in exclude_keywords):
+            return None
+        
+        # 2. 明确的摄像头命令（高优先级）
+        explicit_camera_commands = {
+            "拍照识别": [
+                "看到","拍个照识别",  
+                "看看", "拍照分析", "识别","这是","这里","手里","面前","镜头","相机","摄像头","眼前"
+            ],
+            "拍照": [
+                "拍照", "拍张照", "拍个照", "照相", "拍一张", "来张照片",
+                "给我拍照", "帮我拍照", "拍个图"
+            ],
+            "查看照片": ["查看照片", "看照片", "照片列表", "有哪些照片", "打开相册"],
+            "摄像头状态": ["摄像头状态", "相机状态", "摄像头怎么样", "相机工作吗"]
+        }
+        
+        # 检查明确命令
+        for command, keywords in explicit_camera_commands.items():
+            for keyword in keywords:
+                if keyword in question_lower:
+                    return {"command": command, "original_question": question}
+        
+        # 3. 需要视觉识别的关键词组合（中等优先级）
+        visual_context_words = ["面前", "手里", "手上", "桌上", "眼前", "镜头前", "这里", "那里"]
+        visual_question_words = ["是什么", "什么东西", "什么玩意", "是啥"]
+        
+        # 检查是否有明确的视觉上下文
+        has_visual_context = any(context in question_lower for context in visual_context_words)
+        has_visual_question = any(q in question_lower for q in visual_question_words)
+        
+        # 必须同时包含视觉上下文和疑问词
+        if has_visual_context and has_visual_question:
+            return {"command": "拍照识别", "original_question": question}
+        
+        # 4. 明确需要视觉识别的完整短语（严格匹配）
+        visual_recognition_patterns = [
+            r"^.{0,5}(看看|瞧瞧|帮我看|帮我瞧).{0,5}(这|那|这个|这里|那个|我手里|面前|桌上).{0,5}(是什么|是啥|什么东西|什么牌子|什么品牌).*$",
+            r"^.{0,5}(这个|那个|我手里的|桌上的|面前的|镜头|摄像机).{0,5}(东西|物品|物体).{0,5}(是什么|是啥).*$",
+            r"^.{0,5}(帮我|请|能不能).{0,5}(看看|识别|认一下).{0,5}(这|那|这个|那个).*$",
+            r"^.{0,5}(拍照).{0,5}(看看|识别|分析).{0,5}(这|那|什么).*$"
+        ]
+        
+        for pattern in visual_recognition_patterns:
+            if re.search(pattern, question_lower):
+                return {"command": "拍照识别", "original_question": question}
+        
+        # 5. 数量识别的特定模式（严格的视觉场景）
+        visual_quantity_patterns = [
+            r"^.{0,10}(我|你).{0,5}(手指|手).{0,5}(比|举|伸).{0,5}(几个|多少个?).*$",
+            r"^.{0,10}(数数|数一下|看看).{0,5}(我|面前|桌上|这里).{0,5}(有)?.{0,5}(几个|多少个?).*$",
+            r"^.{0,10}(面前|桌上|手里|这里).{0,10}(有)?.{0,5}(几个|多少个?).*$",
+            r"^.{0,10}(看看|瞧瞧).{0,5}(这|那|我).{0,5}(是|有).{0,5}(几个|多少).*$"
+        ]
+        
+        for pattern in visual_quantity_patterns:
+            if re.search(pattern, question_lower):
+                # 额外检查：确保不是价格相关
+                if not any(word in question_lower for word in ["多少钱", "价格", "成本", "费用", "售价"]):
+                    return {"command": "拍照识别", "original_question": question}
+        
+        # 确保不会误触发
+        if len(question) < 15:  
+            return None
+        
+        # 默认不触发摄像头
+        return None
+
+    def preprocess_camera_question(self, question):
+        """预处理相机相关问题，提高意图识别准确性"""
+        
+        # 问题标准化映射
+        question_mappings = {
+            # 数量相关的口语化表达
+            "这有几个": "这里有几个",
+            "一共几个": "总共有几个",
+            "多少个啊": "有多少个",
+            "几个呀": "有几个",
+            "数一数": "数数有多少个",
+            
+            # 位置相关的口语化表达
+            "左边那个": "左边的是什么",
+            "右边那个": "右边的是什么",
+            "上边": "上面",
+            "下边": "下面",
+            
+            # 动作相关的口语化表达
+            "干啥呢": "在做什么",
+            "干嘛呢": "在做什么",
+            "搞什么": "在做什么",
+            
+            # 其他口语化表达
+            "啥颜色": "什么颜色",
+            "啥样子": "什么样子",
+            "咋样": "怎么样",
+            "是啥": "是什么",
+            "有啥": "有什么"
+        }
+        
+        # 应用映射进行标准化
+        processed_question = question
+        for oral, standard in question_mappings.items():
+            if oral in processed_question:
+                processed_question = processed_question.replace(oral, standard)
+        
+        return processed_question
+
+    async def handle_camera_command_stream(self, camera_intent):
+        """处理摄像头命令的流式输出"""
+        command = camera_intent.get("command")
+        original_question = camera_intent.get("original_question", "")
+        
+        try:
+            if command == "拍照识别":
+                # 先发送拍照状态
+                yield "正在拍摄照片..."
+                
+                # 执行拍照分析
+                analysis_result, image_path = await self._photo_analysis(original_question)
+                
+                # 如果有有效的图片路径，发送它
+                if image_path and os.path.exists(image_path):
+                    yield f"PHOTO_PATH:{image_path}"
+                    yield "正在分析图片内容..."
+                    await asyncio.sleep(0.5)
+                
+                # 返回分析结果
+                yield analysis_result
+                
+            elif command == "拍照":
+                yield "正在拍照..."
+                result = await self._simple_photo()
+                yield result
+                
+            elif command == "查看照片":
+                yield "正在查看照片列表..."
+                result = await self._list_photos()
+                yield result
+                
+            elif command == "摄像头状态":
+                yield "正在检查摄像头状态..."
+                result = await self._camera_status()
+                yield result
+                
+            else:
+                yield "未识别的摄像头命令"
+                
+        except Exception as e:
+            logging.error(f"处理摄像头命令失败: {e}", exc_info=True)
+            yield f"摄像头操作失败: {str(e)}"
+
+    async def _simple_photo(self):
+        """简单拍照"""
+        try:
+            tool_result = await self.call_tool("camera-take_photo_only", {})
+            result_data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+            
+            if result_data.get("status") == "success":
+                return "拍照成功"
+            else:
+                return "拍照失败"
+        except:
+            return "拍照出错"
+
+    async def _photo_analysis(self, user_question=""):
+        """拍照分析 - 修复图片路径获取和传递问题"""
+        try:
+            # 定义各类问题的关键词和对应的提示词模板
+            analysis_patterns = {
+                # 数量计数类
+                "quantity": {
+                    "keywords": ["几个", "多少", "几根", "几只", "几条", "几张", "几块", "数数", "数一下", "有多少"],
+                    "prompt_template": "请准确计数并直接回答：{question}。请给出具体数字。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 比较判断类
+                "comparison": {
+                    "keywords": ["哪个更", "谁更", "最大", "最小", "最高", "最矮", "最多", "最少", "比较"],
+                    "prompt_template": "请比较图片中的对象并回答：{question}。请明确指出比较结果。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 位置方向类
+                "location": {
+                    "keywords": ["左边", "右边", "上面", "下面", "前面", "后面", "中间", "旁边", "位置", "哪里", "在哪"],
+                    "prompt_template": "请根据图片中的位置关系回答：{question}。请明确说明方位。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 动作行为类
+                "action": {
+                    "keywords": ["在做什么", "什么动作", "正在", "怎么做", "在干嘛", "动作是"],
+                    "prompt_template": "请描述图片中的动作或行为：{question}。请具体说明动作内容。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 情绪表情类
+                "emotion": {
+                    "keywords": ["什么表情", "开心吗", "难过吗", "生气", "高兴", "情绪", "心情", "感觉"],
+                    "prompt_template": "请分析图片中的表情或情绪：{question}。请描述具体的情绪状态。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 文字识别类
+                "text": {
+                    "keywords": ["写的什么", "什么字", "文字内容", "上面写着", "标签", "文本", "标题","写了什么"],
+                    "prompt_template": "请识别并读出图片中的文字内容：{question}。请准确转述所有可见文字。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 存在性判断类
+                "existence": {
+                    "keywords": ["有没有", "是否有", "存在", "能看到", "有无", "是不是有"],
+                    "prompt_template": "请判断并回答：{question}。请明确回答'有'或'没有'，并说明具体情况。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 颜色外观类
+                "appearance": {
+                    "keywords": ["什么颜色", "颜色是", "什么样子", "长什么样", "外观", "形状"],
+                    "prompt_template": "请描述外观特征来回答：{question}。请具体说明颜色、形状等特征。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 品牌标识类
+                "brand": {
+                    "keywords": ["什么牌子", "哪个品牌", "什么品牌", "商标", "logo", "标志"],
+                    "prompt_template": "请识别品牌或标识：{question}。如果能识别出品牌，请明确说出品牌名称。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 时间相关类
+                "time": {
+                    "keywords": ["几点", "什么时间", "时间是", "显示时间", "钟表"],
+                    "prompt_template": "请读取时间信息：{question}。如果图中有时间显示，请准确读出。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 相似度判断类
+                "similarity": {
+                    "keywords": ["像什么", "像不像", "是不是", "看起来像", "类似", "相似"],
+                    "prompt_template": "请进行相似性判断：{question}。请说明相似或不相似的理由。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 材质属性类
+                "material": {
+                    "keywords": ["什么材质", "什么材料", "是金属", "是塑料", "是木头", "质地"],
+                    "prompt_template": "请判断材质或质地：{question}。请根据视觉特征推断可能的材质。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 状态条件类
+                "condition": {
+                    "keywords": ["新的还是旧的", "完好", "破损", "干净", "脏", "整齐", "凌乱", "状态"],
+                    "prompt_template": "请评估状态或条件：{question}。请描述具体的状态特征。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 功能用途类
+                "function": {
+                    "keywords": ["用来做什么", "什么用途", "干什么用的", "功能是", "用来"],
+                    "prompt_template": "请说明功能或用途：{question}。请根据物品特征推断其可能的用途。用聊天的方式简洁回答图片内容"
+                },
+                
+                # 安全相关类
+                "safety": {
+                    "keywords": ["危险吗", "安全吗", "有危险", "是否安全"],
+                    "prompt_template": "请评估安全性：{question}。请指出可能的安全隐患或确认安全状态。用聊天的方式简洁回答图片内容"
+                }
+            }
+            
+            # 根据用户问题构建合适的提示词
+            prompt = "用聊天的方式简洁回答图片内容"
+            
+            if user_question:
+                question_lower = user_question.lower()
+                
+                # 遍历所有模式，找到匹配的类型
+                matched = False
+                for pattern_type, pattern_info in analysis_patterns.items():
+                    keywords = pattern_info["keywords"]
+                    if any(keyword in question_lower for keyword in keywords):
+                        prompt = pattern_info["prompt_template"].format(question=user_question)
+                        matched = True
+                        logging.info(f"匹配到{pattern_type}类型的问题")
+                        break
+                
+                # 如果没有匹配到特定模式，但有用户问题，使用通用问答模板
+                if not matched and user_question:
+                    prompt = f"请根据图片内容以聊天的方式简洁回答以下问题：{user_question}"
+            
+            # 直接调用分析工具（该工具内部会处理拍照）
+            tool_result = await self.call_tool("camera-take_photo_and_analyze", {
+                "prompt": prompt
+            })
+            
+            # 处理返回结果，提取分析内容和图片路径
+            analysis_text = "识别完成"
+            image_path = None
+            
+            if isinstance(tool_result, str):
+                try:
+                    result_data = json.loads(tool_result)
+                    analysis_text = result_data.get("analysis", tool_result)
+                    
+                    # 尝试从结果中提取图片路径
+                    for key in ["file_path", "path", "image_path", "photo_path"]:
+                        if key in result_data and result_data[key]:
+                            image_path = result_data[key]
+                            break
+                            
+                except json.JSONDecodeError:
+                    analysis_text = tool_result
+            else:
+                if isinstance(tool_result, dict):
+                    analysis_text = tool_result.get("analysis", "识别完成")
+                    
+                    # 尝试从结果中提取图片路径
+                    for key in ["file_path", "path", "image_path", "photo_path"]:
+                        if key in tool_result and tool_result[key]:
+                            image_path = tool_result[key]
+                            break
+            
+            # 如果没有获取到图片路径，尝试查找最新的照片文件
+            if not image_path:
+                photos_dir = "/home/wuye/vscode/raspberrypi_5/rasoberry/photos/"
+                if os.path.exists(photos_dir):
+                    photos = [f for f in os.listdir(photos_dir) if f.startswith("photo_") and f.endswith(".jpg")]
+                    if photos:
+                        latest_photo = max(photos, key=lambda x: os.path.getctime(os.path.join(photos_dir, x)))
+                        image_path = os.path.join(photos_dir, latest_photo)
+                        logging.info(f"使用最新照片: {image_path}")
+            
+            # 验证图片路径
+            if image_path and not os.path.exists(image_path):
+                logging.error(f"图片文件不存在: {image_path}")
+                image_path = None
+            
+            # 使用改进的文本清理
+            clean_text = self._clean_analysis_text(analysis_text)
+            
+            logging.info(f"分析完成，图片路径: {image_path}, 分析结果: {clean_text[:50]}...")
+            return clean_text, image_path
+            
+        except Exception as e:
+            logging.error(f"拍照分析失败: {e}", exc_info=True)
+            return "识别失败，请重试", None
+    async def _list_photos(self):
+        """查看照片列表"""
+        try:
+            tool_result = await self.call_tool("camera-list_photos", {})
+            result_data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+            
+            if result_data.get("status") == "success":
+                total = result_data.get("total_photos", 0)
+                if total == 0:
+                    return "暂无照片"
+                return f"共有{total}张照片"
+            else:
+                return "获取照片列表失败"
+        except:
+            return "查看照片出错"
+
+    async def _camera_status(self):
+        """摄像头状态"""
+        try:
+            tool_result = await self.call_tool("camera-get_camera_status", {})
+            result_data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+            
+            if result_data.get("status") == "success":
+                camera_status = result_data.get("camera_status", "未知")
+                total_photos = result_data.get("total_photos", 0)
+                return f"摄像头{camera_status}，已拍{total_photos}张照片"
+            else:
+                return "摄像头状态检查失败"
+        except:
+            return "状态检查出错"
+
+    def _clean_analysis_text(self, text):
+        """改进的文本清理 - 保留有用信息"""
+        if not text or not isinstance(text, str):
+            return "识别完成"
+        
+    
+        
+        # 打印原始返回结果用于调试
+        # logging.info(f"原始分析结果: {text}")
+        
+        # 处理可能的JSON格式返回
+        if text.startswith('{') and '"text"' in text:
+            try:
+            
+                parsed_data = json.loads(text)
+                if isinstance(parsed_data, dict) and 'text' in parsed_data:
+                    text = parsed_data['text']
+            except:
+                pass
+        
+        # 基本清理：去除多余的格式
+        text = text.strip()
+        
+        # 移除Markdown格式但保留内容
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^\s*[-*]\s*', '', text, flags=re.MULTILINE)
+        
+        # 清理多余空格和换行
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # 如果文本为空或只有标点，返回默认值
+        if not text or len(text.strip('。，')) < 2:
+            return "识别完成。"
+        
+        # 确保以句号结尾
+        if text and not text.endswith(('。', '！', '？')):
+            text += '。'
+        
+        # logging.info(f"清理后结果: {text}")
+        return text
+    
     async def handle_search_command(self, intent):
         """处理搜索相关命令"""
         command = intent.get("command")
@@ -845,55 +1281,102 @@ class KnowledgeQA:
         return "请提供要搜索的内容。"
     
     async def handle_music_command(self, intent): 
-        """处理音乐相关命令"""
+        """处理音乐相关命令 - 修复版本"""
         command = intent.get("command")
         tool_result = None 
 
         if command == "播放":
             song_name = intent.get("song_name", "")
             if song_name:
-                
-                tool_result = await self.call_tool("netease_music-play_music", {"song_name": song_name})
-                if isinstance(tool_result, dict) and "status" in tool_result:
-                    return tool_result["status"]
-               
-                logging.warning(f"播放音乐调用结果异常: {tool_result}")
-                return str(tool_result) if tool_result else f"尝试播放 {song_name} 时出错，未收到明确结果。"
+                try:
+                    tool_result = await self.call_tool("netease_music-play_music", {"song_name": song_name})
+                    
+                    # 详细日志记录，帮助调试
+                    logging.info(f"播放音乐工具返回: {tool_result}")
+                    logging.info(f"返回类型: {type(tool_result)}")
+                    
+                    # 处理不同的返回格式
+                    if isinstance(tool_result, dict):
+                        if "status" in tool_result:
+                            return f"正在播放 {song_name}"
+                        elif "error" in tool_result:
+                            return f"正在播放{song_name}"
+                        else:
+                            # 字典格式但没有预期的键
+                            return f"正在播放 {song_name}"
+                    
+                    elif isinstance(tool_result, str):
+                        # 字符串返回值处理
+                        result_lower = tool_result.lower()
+                        if any(success_word in result_lower for success_word in ["success", "playing", "播放", "成功"]):
+                            return f"正在播放 {song_name}"
+                        elif any(error_word in result_lower for error_word in ["error", "failed", "失败", "错误"]):
+                            return f"正在播放 {song_name}"
+                        else:
+                            # 默认认为播放成功
+                            return f"正在播放 {song_name}"
+                    
+                    else:
+                        # 其他格式，尝试转换为字符串处理
+                        result_str = str(tool_result)
+                        logging.info(f"工具返回其他格式，转换为字符串: {result_str}")
+                        return f"正在播放 {song_name}"
+                        
+                except Exception as e:
+                    logging.error(f"播放音乐时出现异常: {e}")
+                    return f"播放 {song_name} 时出现错误: {str(e)}"
             else:
                 return "请告诉我您想听的歌曲名称或歌手"
 
         elif command == "停止":
-           
-            tool_result = await self.call_tool("netease_music-stopplay", {})
+            try:
+                tool_result = await self.call_tool("netease_music-stopplay", {})
+                return "音乐已停止"
+            except Exception as e:
+                logging.error(f"停止音乐时出现异常: {e}")
+                return f"停止音乐失败: {str(e)}"
 
         elif command == "暂停":
-        
-            tool_result = await self.call_tool("netease_music-pauseplay", {})
+            try:
+                tool_result = await self.call_tool("netease_music-pauseplay", {})
+                return "音乐已暂停"
+            except Exception as e:
+                logging.error(f"暂停音乐时出现异常: {e}")
+                return f"暂停音乐失败: {str(e)}"
 
         elif command == "继续":
-            
-            tool_result = await self.call_tool("netease_music-unpauseplay", {})
+            try:
+                tool_result = await self.call_tool("netease_music-unpauseplay", {})
+                return "音乐继续播放"
+            except Exception as e:
+                logging.error(f"继续音乐时出现异常: {e}")
+                return f"继续音乐失败: {str(e)}"
 
         elif command == "下一首":
-           
-            tool_result = await self.call_tool("netease_music-next_song", {})
-            if isinstance(tool_result, dict) and "status" in tool_result:
-                return tool_result["status"]
-     
+            try:
+                tool_result = await self.call_tool("netease_music-next_song", {})
+                # 下一首可能返回特殊格式
+                if isinstance(tool_result, dict) and "status" in tool_result:
+                    return tool_result["status"]
+                else:
+                    return "已切换到下一首"
+            except Exception as e:
+                logging.error(f"切换下一首时出现异常: {e}")
+                return f"切换下一首失败: {str(e)}"
 
         elif command == "播放列表":
-
-            tool_result = await self.call_tool("netease_music-get_playlist", {})
+            try:
+                tool_result = await self.call_tool("netease_music-get_playlist", {})
+                if tool_result:
+                    return str(tool_result)
+                else:
+                    return "播放列表为空"
+            except Exception as e:
+                logging.error(f"获取播放列表时出现异常: {e}")
+                return f"获取播放列表失败: {str(e)}"
 
         else:
             return "无法处理该音乐指令。"
-
-       
-        if tool_result is not None:
-            return str(tool_result)
-
-        
-        return "音乐操作执行完毕，但未收到明确结果。"
 
     
     async def ask_stream(self, question, use_context=True, use_tools=True):
@@ -932,6 +1415,23 @@ class KnowledgeQA:
                     await self.conversation_manager.add_conversation_entry(question, result, response_time)
                     await self.conversation_manager.save_tracking_data()
                     return
+                # 检测摄像头命令
+                camera_intent = self.detect_camera_intent(question)
+                if camera_intent:
+                    # 先返回处理提示
+                    yield "正在拍摄照片..."
+                    
+                    # 执行摄像头命令
+                    full_result = ""
+                    async for chunk in self.handle_camera_command_stream(camera_intent):
+                        full_result = chunk  # 使用最新的chunk作为结果
+                        yield chunk
+                    
+                    # 记录对话
+                    response_time = time.time() - start_time
+                    await self.conversation_manager.add_conversation_entry(question, full_result, response_time)
+                    await self.conversation_manager.save_tracking_data()
+                    return
             
             # 非特殊指令处理 - 使用知识库回答
             context = ""
@@ -952,7 +1452,7 @@ class KnowledgeQA:
                 return
 
             # 构建查询提示
-            query = "你是一个甘薯专家，请你以说话的标准回答,"
+            query = "你是一个甘薯专家，请你以说话的标准简洁回答,"
             
             # 构建包含上下文的提示
             doc_context = "\n\n".join([d.page_content for d in docs])
@@ -1096,6 +1596,97 @@ class MessageBubble(QWidget):
             self._msg_label.setText(text)
 
 
+
+class ImageBubble(QWidget):
+    """图片显示气泡组件 - 增强版本"""
+    def __init__(self, image_path=None, image_data=None, parent=None):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.init_ui(image_path, image_data)
+        
+    def init_ui(self, image_path, image_data):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+        
+        # 图片标签
+        self.image_label = QLabel()
+        self.image_label.setMaximumSize(800, 600)  # 增加最大尺寸
+        self.image_label.setMinimumSize(400, 300)  # 设置最小尺寸
+        self.image_label.setScaledContents(False)
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("""
+            QLabel {
+                border: 2px solid #E0E0E0;
+                border-radius: 10px;
+                background-color: #FAFAFA;
+                padding: 5px;
+            }
+        """)
+        
+        # 状态标签
+        self.status_label = QLabel("图片加载中...")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setFont(QFont("微软雅黑", 14))
+        self.status_label.setStyleSheet("""
+            QLabel {
+                color: #666666;
+                background-color: transparent;
+                border: none;
+                padding: 5px;
+            }
+        """)
+        
+        # 加载图片
+        success = self.load_image(image_path, image_data)
+        
+        layout.addWidget(self.image_label)
+        layout.addWidget(self.status_label)
+        
+        # 样式设置
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #f8f8f8;
+                border-radius: 15px;
+                border: 1px solid #d0d0d0;
+                margin: 10px 0px;
+            }
+        """)
+        
+    def load_image(self, image_path, image_data):
+        """加载并显示图片"""
+        try:
+            if image_path and os.path.exists(image_path):
+                logging.info(f"加载图片: {image_path}")
+                pixmap = QPixmap(image_path)
+                
+                if not pixmap.isNull():
+                    # 计算合适的显示尺寸
+                    max_width = 600
+                    max_height = 400
+                    scaled_pixmap = pixmap.scaled(
+                        max_width, max_height, 
+                        Qt.KeepAspectRatio, 
+                        Qt.SmoothTransformation
+                    )
+                    
+                    self.image_label.setPixmap(scaled_pixmap)
+                    self.status_label.setText(f"图片已加载 ({pixmap.width()}x{pixmap.height()})")
+                    logging.info(f"图片加载成功: {image_path}")
+                    return True
+                else:
+                    self.status_label.setText("图片格式不支持")
+                    logging.error(f"图片格式不支持: {image_path}")
+                    return False
+            else:
+                self.status_label.setText("图片文件不存在")
+                logging.error(f"图片文件不存在: {image_path}")
+                return False
+                
+        except Exception as e:
+            self.status_label.setText(f"图片加载失败: {str(e)}")
+            logging.error(f"图片加载失败: {e}")
+            return False
 class ChatArea(QScrollArea):
     """优化的聊天区域 - 高级UI设计"""
     def __init__(self, parent=None):
@@ -1152,7 +1743,12 @@ class ChatArea(QScrollArea):
         # 设置滚动区域的小部件
         self.setWidget(self.container)
     
-
+    def add_image(self, image_path=None, image_data=None):
+        """添加图片到聊天界面"""
+        image_bubble = ImageBubble(image_path, image_data, self)
+        self.layout.addWidget(image_bubble)
+        QTimer.singleShot(100, lambda: self.scrollToBottom())
+        return image_bubble
     def smooth_scroll_to_bottom(self):
         """更平滑地滚动到底部"""
         scrollbar = self.verticalScrollBar()
@@ -1354,7 +1950,16 @@ class StatusIndicator(QWidget):
             border: 3px solid white;
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         """)
-
+    def set_camera_processing(self):
+        """设置摄像头处理状态"""
+        self.text_label.setText("正在处理图像...")
+        self.icon_label.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 #8BC34A, stop:1 #AED581); 
+            border-radius: 14px;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        """)
 # ==================================
 # 主应用类
 # ==================================
@@ -1366,13 +1971,23 @@ class SignalBridge(QObject):
     update_bot_message = Signal(str)
     request_real_time_listening = Signal()
 
-
+    display_image = Signal(str)
 class SweetPotatoGUI(QMainWindow):
     def __init__(self, user_name="吴大王"):
         super().__init__()
         self.user_name = user_name
         self.current_bot_bubble = None
+        # 先初始化 bridge
+        self.bridge = SignalBridge()
         
+        # 然后连接信号
+        self.bridge.display_image.connect(self.display_captured_image)
+        self.bridge.status_changed.connect(self.update_status)
+        self.bridge.add_user_message.connect(self.add_question)
+        self.bridge.start_bot_message.connect(self.start_bot_message)
+        self.bridge.update_bot_message.connect(self.update_bot_message)
+        self.bridge.request_real_time_listening.connect(self.start_real_time_listening)
+        # self.bridge.display_image.connect(self.display_captured_image)
         self.follow_up_prompts = [
             "您还有什么问题吗？",
             "您还有什么想问的？",
@@ -1393,13 +2008,7 @@ class SweetPotatoGUI(QMainWindow):
         self.chat_area = ChatArea()
         self.status_indicator = StatusIndicator()
 
-        # 信号桥接
-        self.bridge = SignalBridge()
-        self.bridge.status_changed.connect(self.update_status)
-        self.bridge.add_user_message.connect(self.add_question)
-        self.bridge.start_bot_message.connect(self.start_bot_message)
-        self.bridge.update_bot_message.connect(self.update_bot_message)
-        self.bridge.request_real_time_listening.connect(self.start_real_time_listening)
+        
 
         # 辅助
         self.conversation_manager = ConversationManager(max_history=10)
@@ -1423,6 +2032,11 @@ class SweetPotatoGUI(QMainWindow):
         
         # 播放欢迎并开始流程
         self.add_task(self.play_welcome_and_listen())
+
+    def display_captured_image(self, image_path):
+        """在聊天区域显示捕获的图片"""
+        if os.path.exists(image_path):
+            self.chat_area.add_image(image_path=image_path)
 
     async def initialize_mcp(self):
         """初始化MCP服务"""
@@ -1653,6 +2267,85 @@ class SweetPotatoGUI(QMainWindow):
                 self.status_indicator.set_listening()
         
         return True
+    def detect_camera_intent(self, question):
+        """检测摄像头意图"""
+        return self.qa_model.detect_camera_intent(question)
+
+    async def handle_camera_command_stream(self, camera_intent):
+        """处理摄像头命令流"""
+        async for chunk in self.qa_model.handle_camera_command_stream(camera_intent):
+            yield chunk
+
+    async def handle_camera_interaction(self, text, camera_intent):
+        """处理摄像头相关的交互逻辑"""
+        # 设置状态为摄像头处理
+        self.status_indicator.set_camera_processing()
+        
+        # 添加用户消息
+        self.bridge.add_user_message.emit(text)
+        self.bridge.start_bot_message.emit()
+        
+        # 使用流式处理摄像头命令
+        full_result = ""
+        async for chunk in self.qa_model.handle_camera_command_stream(camera_intent):
+            full_result += chunk
+            self.bridge.update_bot_message.emit(full_result)
+            await asyncio.sleep(0.01)
+        
+        # 记录对话
+        response_time = time.time() - self.current_question_start_time
+        await self.conversation_manager.add_conversation_entry(text, full_result, response_time)
+        await self.conversation_manager.save_tracking_data()
+        
+        # TTS播放结果
+        await self.tts_streamer.speak_text(full_result, wait=True)
+        
+        # 恢复到监听状态
+        self.status_indicator.set_listening()
+        
+        return True
+    async def handle_camera_in_main_loop(self, text, camera_intent):
+        """在主循环中处理摄像头命令"""
+        self.bridge.add_user_message.emit(text)
+        self.status_indicator.set_camera_processing()
+        self.bridge.start_bot_message.emit()
+        
+        # 处理摄像头命令
+        full_result = ""
+        image_displayed = False
+        
+        async for chunk in self.qa_model.handle_camera_command_stream(camera_intent):
+            if chunk.startswith("PHOTO_PATH:"):
+                image_path = chunk.replace("PHOTO_PATH:", "")
+                if image_path and os.path.exists(image_path):
+                    logging.info(f"准备显示图片: {image_path}")
+                    self.bridge.display_image.emit(image_path)
+                    image_displayed = True
+                    await asyncio.sleep(1.5)  # 增加等待时间确保图片显示
+                    # 重新开始机器人消息显示分析结果
+                    self.bridge.start_bot_message.emit()
+                else:
+                    logging.error(f"图片路径无效: {image_path}")
+            elif chunk != "正在拍摄照片..." and chunk != "正在分析图片内容...":
+                full_result += chunk
+                self.bridge.update_bot_message.emit(full_result)
+            else:
+                # 显示状态信息
+                self.bridge.update_bot_message.emit(chunk)
+            
+            await asyncio.sleep(0.01)
+        
+        # 记录对话
+        response_time = time.time() - self.current_question_start_time
+        await self.conversation_manager.add_conversation_entry(text, full_result, response_time)
+        await self.conversation_manager.save_tracking_data()
+        
+        # TTS 播放
+        if full_result:
+            await self.tts_streamer.speak_text(full_result, wait=True)
+        
+        self.status_indicator.set_listening()
+        self.is_processing = False
     
     async def music_mode_listening(self):
         """音乐模式：无间隙持续监听用户指令 - 参考main_stream.py的实现"""
@@ -1774,7 +2467,7 @@ class SweetPotatoGUI(QMainWindow):
 
                 # 正常模式下的问答流程
                 if self.music_interaction_mode == "normal" and not self.is_processing:
-                    prompt_text = f"您好，{self.user_name}！我是甘薯知识助手。" if self.first_interaction else random.choice(self.follow_up_prompts)
+                    prompt_text = f"" if self.first_interaction else random.choice(self.follow_up_prompts)
                     if self.first_interaction:
                         self.first_interaction = False
 
@@ -1848,7 +2541,14 @@ class SweetPotatoGUI(QMainWindow):
                         self.status_indicator.set_listening()
                         self.is_processing = False
                         continue
-                    
+
+                    # 检测摄像头命令
+                    camera_intent = self.detect_camera_intent(text)
+                    if camera_intent:
+                        await self.handle_camera_in_main_loop(text, camera_intent)
+                        continue
+
+
                     # 处理普通问题
                     self.bridge.add_user_message.emit(text)
                     self.status_indicator.set_processing()
@@ -2027,7 +2727,7 @@ async def main_async():
     
     # 初始化应用
     app = QApplication(sys.argv)
-    window = SweetPotatoGUI(user_name="甘薯爱好者")
+    window = SweetPotatoGUI(user_name="吴大王")
     
     # 退出清理
     try:

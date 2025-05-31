@@ -8,7 +8,16 @@
   "isActive": true,
   "command": "python3",
   "args": ["search.py"]
-}
+},"camera": {
+      "isActive": true,
+      "command": "python3",
+      "args": ["camera.py"],
 
+      "environment": {
+        "DISPLAY": ":0",
+        "OPENCV_LOG_LEVEL": "ERROR"
+      }
+    }
+  
     }
 }
