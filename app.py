@@ -18,13 +18,19 @@ import pyaudio
 import webrtcvad
 from aip import AipSpeech
 import edge_tts
+from llama_cpp import Llama
 import io
 import subprocess
+from mcp.server.fastmcp import FastMCP
+from contextlib import AsyncExitStack
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
 
 # 百度ASR API配置
-APP_ID = '118613302'
-API_KEY = '7hSl10mvmtaCndZoab0S3BXQ' 
-SECRET_KEY = 'Fv10TxiFLmWb4UTAdLeA2eaTIE56QtkW'
+APP_ID = ''
+API_KEY = '' 
+SECRET_KEY = ''
 
 # QA模型所需导入
 from langchain_community.vectorstores import FAISS
@@ -93,6 +99,7 @@ class ConversationManager:
             log_entry = {
                 'time': datetime.now().strftime("%H:%M:%S"),
                 'q': question[:50] + '...' if len(question) > 50 else question,
+                'answer': answer[:50] + '...' if len(answer) > 50 else answer,
                 'response_time': round(response_time, 2) if response_time else None
             }
             self.tracking_data['conversation_log'].append(log_entry)
@@ -154,7 +161,7 @@ class TTSStreamer:
         self.speech_queue = asyncio.Queue()
         self.speech_task = None
         self._playback_complete = asyncio.Event()
-        self._playback_complete.set()  # Initially set
+        self._playback_complete.set() 
         self._last_audio_time = 0
         self.exit_stack = None
         self.sessions = {}
@@ -375,11 +382,7 @@ class TTSStreamer:
     async def connect_to_mcp(self, config_file="mcp_server_config.json"):
         """连接到MCP服务器"""
         try:
-            from mcp.server.fastmcp import FastMCP
-            from contextlib import AsyncExitStack
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
-            from mcp.client.sse import sse_client
+
             
             self.exit_stack = AsyncExitStack()
             self.sessions = {}
@@ -575,7 +578,7 @@ class ASRHelper:
 class LlamaCppEmbeddings(Embeddings):
     """自定义嵌入类，使用 llama.cpp 加载 GGUF 模型生成嵌入"""
     def __init__(self, model_path):
-        from llama_cpp import Llama
+     
         self.model = Llama(model_path=model_path, embedding=True)
     def embed_documents(self, texts):
         return [self.model.embed(text) for text in texts]
@@ -591,7 +594,7 @@ class KnowledgeQA:
         embedding_model_path="/home/wuye/vscode/raspberrypi_5/rasoberry/text2vec_base_chinese_q8.gguf",
         conversation_manager=None,
         model_name="qwen-turbo-latest",
-        api_key='sk-4ee9cb3d8d704b23a04abbba3ab19020',
+        api_key='',
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         mcp_config_path="mcp_server_config.json"
     ):
@@ -848,7 +851,7 @@ class KnowledgeQA:
         
         # 3. 需要视觉识别的关键词组合（中等优先级）
         visual_context_words = ["面前", "手里", "手上", "桌上", "眼前", "镜头前", "这里", "那里"]
-        visual_question_words = ["是什么", "什么东西", "什么玩意", "是啥"]
+        visual_question_words = ["是什么", "什么东西", "什么玩意", "是啥","有什么"]
         
         # 检查是否有明确的视觉上下文
         has_visual_context = any(context in question_lower for context in visual_context_words)
