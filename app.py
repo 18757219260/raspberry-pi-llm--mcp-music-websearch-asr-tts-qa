@@ -1,6 +1,5 @@
 import sys
-import asyncio
-import cv2  
+import asyncio 
 import time
 import os
 import re
@@ -26,11 +25,12 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 百度ASR API配置
-APP_ID = ''
-API_KEY = '' 
-SECRET_KEY = ''
+APP_ID = '118613302'
+API_KEY = '7hSl10mvmtaCndZoab0S3BXQ' 
+SECRET_KEY = 'Fv10TxiFLmWb4UTAdLeA2eaTIE56QtkW'
 
 # QA模型所需导入
 from langchain_community.vectorstores import FAISS
@@ -591,10 +591,10 @@ class KnowledgeQA:
         faiss_index_path="faiss_index",
         temperature=0.3,
         k_documents=3,
-        embedding_model_path="/home/wuye/vscode/raspberrypi_5/rasoberry/text2vec_base_chinese_q8.gguf",
+        embedding_model_path="/home/joe/chatbox/model/text2vec_base_chinese_q8.gguf",
         conversation_manager=None,
         model_name="qwen-turbo-latest",
-        api_key='',
+        api_key='sk-4ee9cb3d8d704b23a04abbba3ab19020',
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         mcp_config_path="mcp_server_config.json"
     ):
@@ -609,9 +609,9 @@ class KnowledgeQA:
             "抱歉我不太会",
             "我还不了解这方面。",
             "对不起，我没有这方面的资料。",
-            "我不知道这个答案，不过你可以去问吴家卓",
+            "我不知道这个答案，不过你可以去问专业医师",
             "好像不太会？",
-            "我里个豆阿，你问出这么难的问题我怎么会呢？"
+            "我还不太了解这个问题",
         ]
         
         # 初始化对话管理器
@@ -627,7 +627,7 @@ class KnowledgeQA:
         # 系统消息设置
         self.sys_msg = {
             "role": "system",                                                           
-            "content": "回答简洁"
+            "content": "回答严格"
         }
         
         # MCP配置初始化
@@ -664,13 +664,13 @@ class KnowledgeQA:
         # 添加搜索相关关键词
         self.search_keywords = [
             "搜索", "查找", "查询", "搜一下", "查一下", 
-            "查找", "搜索", "搜", "搜一搜","日历","帮我",
+            "查找", "搜索", "搜", "搜一搜","日历",
             "帮我查", "帮我搜", "请搜索", "请查找"
         ]
         
         # 添加网络信息相关关键词（需要实时信息的查询）
         self.web_info_keywords = [
-            "最新", "最近", "现在", "今天", "目前", "当前",
+            "最新", "今天", "目前", "当前",
             "实时", "新闻", "热点", "天气", "股价", "比分",
             "排行", "趋势", "动态", "更新", "价格","明天","后天","昨天","前天","大后天","大前天","前几天","后几天","之后","你知道吗"
         ,"月","号","年","天","那天","几点","点钟"
@@ -761,7 +761,7 @@ class KnowledgeQA:
                 patterns = [
                     f"{keyword}(.+)",
                     f"请{keyword}(.+)",
-                    f"帮我{keyword}(.+)",
+               
                     f"(.+){keyword}"
                 ]
                 
@@ -803,7 +803,7 @@ class KnowledgeQA:
     
 
     def detect_camera_intent(self, question):
-        """优化的摄像头意图检测 - 降低误触发率"""
+        """优化的摄像头意图检测 - 降低误触发率，增加健康问诊检测"""
         if not question:
             return None
             
@@ -817,7 +817,7 @@ class KnowledgeQA:
             # 搜索相关
             "搜索", "查找", "查询", "搜一下", "查一下", "搜一搜",
             "帮我查", "帮我搜", "请搜索", "请查找", "百度", "谷歌",
-            # 知识问答
+            # 知识问答（但排除健康相关的问诊词汇）
             "为什么", "怎么做", "如何", "什么原理", "解释", "说明",
             "历史", "起源", "发展", "区别", "对比", "分析",
             # 其他常见非视觉问题
@@ -825,8 +825,19 @@ class KnowledgeQA:
             "天气", "温度", "湿度", "时间", "日期", "新闻"
         ]
         
-        # 如果包含排除关键词，直接返回None
-        if any(keyword in question_lower for keyword in exclude_keywords):
+        # 如果包含排除关键词，但要排除健康问诊相关的词汇
+        health_consultation_keywords = [
+            "诊断", "医生", "看看我的", "请你看", "这个是", "这是我的", 
+            "我的这个", "分析一下", "什么问题", "正常", "有问题吗", 
+            "症状", "病情", "舌头", "嘴巴", "脸色", "皮肤", "舌苔",
+            "面色", "气色", "体质", "身体", "检查", "化验", "体检"
+        ]
+        
+        # 检查是否是健康问诊（优先级高于排除关键词）
+        has_health_consultation = any(keyword in question_lower for keyword in health_consultation_keywords)
+        
+        # 如果不是健康问诊，且包含排除关键词，直接返回None
+        if not has_health_consultation and any(keyword in question_lower for keyword in exclude_keywords):
             return None
         
         # 2. 明确的摄像头命令（高优先级）
@@ -849,7 +860,34 @@ class KnowledgeQA:
                 if keyword in question_lower:
                     return {"command": command, "original_question": question}
         
-        # 3. 需要视觉识别的关键词组合（中等优先级）
+        # 3. 健康问诊相关的拍照识别（新增）
+        if has_health_consultation:
+            # 进一步检查是否真的需要视觉识别
+            visual_health_patterns = [
+                r"(看看|瞧瞧|帮我看|请看|医生看|诊断).*(我的|这个|舌头|嘴巴|脸色|面色|皮肤|身体)",
+                r"(诊断|分析|检查).*(我的|这个|舌头||嘴巴|脸色|面色|皮肤|身体)",
+                r"(我的|这个).*(舌头|嘴巴|脸色|皮肤|身体).*(怎么样|正常|有问题|什么情况)",
+                r"(舌头|嘴巴|脸色|皮肤|身体).*(看起来|是否|有没有|什么|怎样)",
+                r"医生.*(看|诊断|分析|检查)",
+                r"(帮我|请).*(看看|诊断|分析|检查)",
+            ]
+            
+            for pattern in visual_health_patterns:
+                if re.search(pattern, question_lower):
+                    return {"command": "拍照识别", "original_question": question}
+            
+            # 如果包含健康关键词但没有明确的视觉指向，也尝试拍照识别
+            # 因为很多健康问诊都需要看到具体情况
+            simple_health_triggers = [
+                "看看我的", "诊断", "医生", "分析一下", "什么问题", 
+                "正常吗", "有问题吗", "怎么样", "这个是什么"
+            ]
+            
+            for trigger in simple_health_triggers:
+                if trigger in question_lower:
+                    return {"command": "拍照识别", "original_question": question}
+        
+        # 4. 需要视觉识别的关键词组合（中等优先级）
         visual_context_words = ["面前", "手里", "手上", "桌上", "眼前", "镜头前", "这里", "那里"]
         visual_question_words = ["是什么", "什么东西", "什么玩意", "是啥","有什么"]
         
@@ -861,7 +899,7 @@ class KnowledgeQA:
         if has_visual_context and has_visual_question:
             return {"command": "拍照识别", "original_question": question}
         
-        # 4. 明确需要视觉识别的完整短语（严格匹配）
+        # 5. 明确需要视觉识别的完整短语（严格匹配）
         visual_recognition_patterns = [
             r"^.{0,5}(看看|瞧瞧|帮我看|帮我瞧).{0,5}(这|那|这个|这里|那个|我手里|面前|桌上).{0,5}(是什么|是啥|什么东西|什么牌子|什么品牌).*$",
             r"^.{0,5}(这个|那个|我手里的|桌上的|面前的|镜头|摄像机).{0,5}(东西|物品|物体).{0,5}(是什么|是啥).*$",
@@ -873,7 +911,7 @@ class KnowledgeQA:
             if re.search(pattern, question_lower):
                 return {"command": "拍照识别", "original_question": question}
         
-        # 5. 数量识别的特定模式（严格的视觉场景）
+        # 6. 数量识别的特定模式（严格的视觉场景）
         visual_quantity_patterns = [
             r"^.{0,10}(我|你).{0,5}(手指|手).{0,5}(比|举|伸).{0,5}(几个|多少个?).*$",
             r"^.{0,10}(数数|数一下|看看).{0,5}(我|面前|桌上|这里).{0,5}(有)?.{0,5}(几个|多少个?).*$",
@@ -887,8 +925,16 @@ class KnowledgeQA:
                 if not any(word in question_lower for word in ["多少钱", "价格", "成本", "费用", "售价"]):
                     return {"command": "拍照识别", "original_question": question}
         
-        # 确保不会误触发
-        if len(question) < 15:  
+        # 修改：降低长度限制，特别是对于健康问诊相关的问题
+        # 如果包含健康问诊关键词，只需要8个字符以上
+        if has_health_consultation and len(question) >= 8:
+            # 再次检查是否包含需要视觉的关键词
+            visual_keywords = ["看", "瞧", "诊断", "分析", "检查", "面色", "脸色", "舌头", "舌苔"]
+            if any(keyword in question_lower for keyword in visual_keywords):
+                return {"command": "拍照识别", "original_question": question}
+        
+        # 对于一般问题，保持原有的15字符限制，但可以适当降低到10
+        if len(question) < 10:  
             return None
         
         # 默认不触发摄像头
@@ -1140,7 +1186,7 @@ class KnowledgeQA:
             
             # 如果没有获取到图片路径，尝试查找最新的照片文件
             if not image_path:
-                photos_dir = "/home/wuye/vscode/raspberrypi_5/rasoberry/photos/"
+                photos_dir = "/home/joe/chatbox/photos"
                 if os.path.exists(photos_dir):
                     photos = [f for f in os.listdir(photos_dir) if f.startswith("photo_") and f.endswith(".jpg")]
                     if photos:
@@ -1177,6 +1223,138 @@ class KnowledgeQA:
                 return "获取照片列表失败"
         except:
             return "查看照片出错"
+    def detect_health_related_keywords(self, question):
+        """检测中医康养和健康相关关键词"""
+        health_keywords = {
+            # 中医相关
+            "中医": ["中医", "中药", "经络", "穴位", "气血", "阴阳", "五行", "脉象", "舌诊"],
+            
+            # 身体部位和症状
+            "身体": ["身体", "体质", "体检", "检查报告", "化验单", "体检报告", "检验报告", 
+                    "血常规", "尿常规", "肝功能", "肾功能", "血糖", "血压", "心电图"],
+            
+            # 症状描述
+            "症状": ["疼痛", "不舒服", "难受", "发烧", "咳嗽", "头疼", "头晕", "恶心", 
+                    "腹泻", "便秘", "失眠", "疲劳", "乏力", "虚弱"],
+            
+            # 康养膳食
+            "膳食": ["膳食", "食疗", "药膳", "养生", "保健", "营养", "饮食", "食补", 
+                    "滋补", "调理", "调养", "补充", "食材", "配方"],
+            
+            # 健康状态
+            "健康": ["健康", "亚健康", "免疫力", "抵抗力", "精神状态", "气色", 
+                    "面色", "舌苔", "脉搏","舌头","嘴巴", "脸色", "皮肤"],
+            
+            # 常见问诊用语
+            "问诊": ["看看我的", "请你看", "这个是", "这是我的", "我的这个", 
+                     "分析一下", "什么问题", "正常", "有问题吗","诊断","症状", "病情","医生"]
+        }
+        
+        question_lower = question.lower()
+        
+        # 检查是否包含健康相关关键词
+        for category, keywords in health_keywords.items():
+            for keyword in keywords:
+                if keyword in question_lower:
+                    return True, category
+        
+        return False, None
+
+    async def _photo_analysis_with_knowledge(self, user_question=""):
+        """增强的拍照分析 - 结合知识库"""
+        try:
+            # 检测是否是健康相关问题
+            is_health_related, category = self.detect_health_related_keywords(user_question)
+            
+            # 构建图像分析提示词
+            if is_health_related:
+                # 健康相关的特殊提示词
+                health_prompts = {
+                    "中医": "请仔细观察图片中的舌苔、面色、体征等中医诊断相关特征，并详细描述。",
+                    "身体": "请详细描述图片中的体检报告或身体状况相关内容，包括数值、指标等。",
+                    "症状": "请观察并描述图片中显示的症状或体征表现。",
+                    "膳食": "请识别图片中的食材、药材或膳食内容，并描述其特征。",
+                    "健康": "请分析图片中反映的健康状态相关信息。",
+                    "问诊": "请详细描述图片中的医疗相关内容。"
+                }
+                
+                base_prompt = health_prompts.get(category, "请详细分析图片内容。")
+                prompt = f"{base_prompt} 用户问题：{user_question}"
+            else:
+                # 非健康相关使用原有逻辑
+                return await self._photo_analysis(user_question)
+            
+            # 调用图像分析
+            tool_result = await self.call_tool("camera-take_photo_and_analyze", {
+                "prompt": prompt
+            })
+            
+            # 处理图像分析结果
+            if isinstance(tool_result, str):
+                try:
+                    result_data = json.loads(tool_result)
+                    image_analysis = result_data.get("analysis", tool_result)
+                except:
+                    image_analysis = tool_result
+            else:
+                image_analysis = tool_result.get("analysis", "识别完成")
+            
+            # 清理图像分析文本
+            image_analysis = self._clean_analysis_text(image_analysis)
+            
+            # 如果是健康相关问题，查询知识库
+            if is_health_related:
+                # 构建知识库查询
+                kb_query = f"{user_question} {image_analysis}"
+                
+                # 查询知识库
+                docs = await asyncio.to_thread(
+                    self.vectorstore.as_retriever(search_kwargs={"k": self.k_documents}).invoke,
+                    kb_query
+                )
+                
+                if docs:
+                    # 构建结合图像和知识库的回答
+                    doc_context = "\n\n".join([d.page_content for d in docs])
+                    
+                    # 构建综合提示词
+                    combined_prompt = f"""
+                                图像分析结果：
+                                {image_analysis}
+                                相关知识库内容：
+                                {doc_context}
+                                用户问题：{user_question}
+                                请根据图像分析结果和知识库内容，为用户提供专业的中医康养建议或膳食指导。请用中医专家说话的方式严格回答，输出为一段"""
+
+                    # 调用LLM生成综合回答
+                    messages = [{"role": "user", "content": combined_prompt}]
+                    
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=self.model_name,
+                            messages=messages,
+                            temperature=0.7,
+                            max_tokens=500
+                        )
+                        
+                        combined_answer = response.choices[0].message.content
+                        return combined_answer
+                        
+                    except Exception as e:
+                        logging.error(f"生成综合回答失败: {e}")
+                        # 如果LLM调用失败，返回图像分析结果
+                        return f"图像识别结果：{image_analysis}\n\n（知识库查询遇到问题，仅提供图像分析结果）"
+                else:
+                    # 没有找到相关知识库内容，仅返回图像分析
+                    return f"图像识别结果：{image_analysis}\n\n（未在知识库中找到相关专业内容）"
+            else:
+                # 非健康相关，直接返回图像分析结果
+                return image_analysis
+                
+        except Exception as e:
+            logging.error(f"增强拍照分析失败: {e}")
+            return "识别失败"
+
 
     async def _camera_status(self):
         """摄像头状态"""
@@ -1198,15 +1376,12 @@ class KnowledgeQA:
         if not text or not isinstance(text, str):
             return "识别完成"
         
-    
-        
         # 打印原始返回结果用于调试
         # logging.info(f"原始分析结果: {text}")
         
         # 处理可能的JSON格式返回
         if text.startswith('{') and '"text"' in text:
             try:
-            
                 parsed_data = json.loads(text)
                 if isinstance(parsed_data, dict) and 'text' in parsed_data:
                     text = parsed_data['text']
@@ -1218,18 +1393,18 @@ class KnowledgeQA:
         
         # 移除Markdown格式但保留内容
         text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        
+        # 不要过度清理短文本（比如数字答案）
+        if len(text) < 10:  # 短答案直接返回
+            return text
+        
+        # 对于较长文本，进行更多清理
         text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*[-*]\s*', '', text, flags=re.MULTILINE)
-        
-        # 清理多余空格和换行
         text = re.sub(r'\s+', ' ', text).strip()
         
-        # 如果文本为空或只有标点，返回默认值
-        if not text or len(text.strip('。，')) < 2:
-            return "识别完成。"
-        
-        # 确保以句号结尾
-        if text and not text.endswith(('。', '！', '？')):
+        # 确保以句号结尾（如果没有标点的话）
+        if text and not text.endswith(('。', '！', '？', '.', '!', '?')):
             text += '。'
         
         # logging.info(f"清理后结果: {text}")
@@ -1455,7 +1630,7 @@ class KnowledgeQA:
                 return
 
             # 构建查询提示
-            query = "你是一个甘薯专家，请你以说话的标准简洁回答,"
+            query = "你是一个中医康养和膳食专家，请你以说话的标准回答，请你根据参考内容严格回答，回答输出为一段，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
             
             # 构建包含上下文的提示
             doc_context = "\n\n".join([d.page_content for d in docs])
@@ -1995,11 +2170,11 @@ class SweetPotatoGUI(QMainWindow):
             "您还有什么问题吗？",
             "您还有什么想问的？",
             "您还想了解些什么？",
-            "还有其他关于甘薯的问题吗？",
-            "想成为吴家卓吗？",
+            "还有其他关于健康的问题吗？",
+            "想更加健康吗？",
             "还有什么疑问呢",
             "嘿嘿嘿你说呀？",
-            "太豆了你，赶紧说？"
+            
         ]
         
         # 修改音乐交互模式，简化为两种模式
@@ -2053,7 +2228,7 @@ class SweetPotatoGUI(QMainWindow):
 
     def init_ui(self):
         """初始化UI - 高级设计"""
-        self.setWindowTitle("甘薯知识问答系统")
+        self.setWindowTitle("中医康养和膳食诊断系统")
         self.showFullScreen()
         
         # 设置窗口背景
@@ -2095,7 +2270,7 @@ class SweetPotatoGUI(QMainWindow):
         """)
 
         # 标题 - 增强字体
-        title_label = QLabel("甘薯知识助手")
+        title_label = QLabel("中医康养和膳食助手")
         title_label.setFont(QFont("微软雅黑", 26, QFont.Bold))
         title_label.setAlignment(Qt.AlignVCenter)
         title_label.setStyleSheet("""
@@ -2171,7 +2346,7 @@ class SweetPotatoGUI(QMainWindow):
             self.status_indicator.set_listening()
 
     async def play_welcome_and_listen(self):
-        welcome_msg = f"您好，{self.user_name}！我是甘薯知识助手，请通过语音向我提问关于甘薯的问题。"
+        welcome_msg = f"您好，{self.user_name}！我是中医康养和膳食助手，请通过语音向我提问关于中医健康的问题。"
         # 显示文字
         self.chat_area.add_message(welcome_msg)
         # 切到"回答中"状态
@@ -2491,6 +2666,7 @@ class SweetPotatoGUI(QMainWindow):
                     # 检查语音识别结果
                     if not text or text.strip() == "" or text.lower() in ["嗯。", "嗯嗯。", "嗯嗯嗯。", "啊。", "啊？"] or re.fullmatch(r"嗯+", text.lower()):
                         logging.info(f"❌ 未检测到有效语音输入或输入为无意义词: '{text}'")
+                        time.sleep(10)
                         continue
                     
                     # 处理有效输入
@@ -2502,13 +2678,13 @@ class SweetPotatoGUI(QMainWindow):
                         logging.info(f"🚪 收到退出命令: '{text}'")
                         self.bridge.add_user_message.emit(text)
                         self.bridge.start_bot_message.emit()
-                        self.bridge.update_bot_message.emit("再见！感谢使用甘薯知识助手。")
+                        self.bridge.update_bot_message.emit("再见！感谢使用中医康养和膳食助手。")
                         
                         # 取消音乐监听任务
                         if hasattr(self, 'music_listen_task') and self.music_listen_task and not self.music_listen_task.done():
                             self.music_listen_task.cancel()
                         
-                        await self.tts_streamer.speak_text("好的，感谢使用甘薯知识助手，再见！", wait=True)
+                        await self.tts_streamer.speak_text("好的，感谢使用中医康养和膳食助手，再见！", wait=True)
                         self.close()
                         return
                     
@@ -2640,6 +2816,8 @@ class SweetPotatoGUI(QMainWindow):
         """更新机器人消息"""
         if self.current_bot_bubble and self.current_bot_bubble.msg_label:
             self.current_bot_bubble.update_text(text)
+            # 添加滚动操作，确保用户能看到最新内容
+            QTimer.singleShot(50, lambda: self.chat_area.scrollToBottom())
             
     def start_real_time_listening(self):
         """启动实时监听"""

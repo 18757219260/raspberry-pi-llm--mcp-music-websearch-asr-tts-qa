@@ -5,6 +5,7 @@ from http import HTTPStatus
 from dashscope import Application
 import json
 
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("web_search")
 
 # 配置私网终端节点
-os.environ['DASHSCOPE_HTTP_BASE_URL'] = ''
+os.environ['DASHSCOPE_HTTP_BASE_URL'] = 'https://ep-2zei6917b47eed******.dashscope.cn-beijing.privatelink.aliyuncs.com/api/v1/'
 
 @mcp.tool()
 def web_search(query: str, limit: int = 5) -> str:
@@ -30,8 +31,8 @@ def web_search(query: str, limit: int = 5) -> str:
     try:
         # 调用阿里云通义千问搜索应用
         response = Application.call(
-            api_key='',
-            app_id='', 
+            api_key='sk-08bb8f6bf6ad4bbd9f33913fb6b6e248',
+            app_id='8f171e98371244e381cbee6e56b560f6', 
             prompt=query
         )
         
@@ -73,8 +74,8 @@ def get_search_status() -> str:
     try:
         # 测试搜索功能是否正常
         test_response = Application.call(
-            api_key='',
-            app_id='',
+            api_key='sk-08bb8f6bf6ad4bbd9f33913fb6b6e248',
+            app_id='8f171e98371244e381cbee6e56b560f6',
             prompt='测试'
         )
         

@@ -11,7 +11,7 @@ import re
 from qa_model_easy import KnowledgeQA
 from asr import ASRhelper
 from tts_stream import TTSStreamer  
-from face_recognize import FaceRecognizer
+from face.face_recognize import FaceRecognizer
 import random   
 from conversation import ConversationManager
 
@@ -107,11 +107,11 @@ class SweetPotatoChatbox:
             "您还有什么问题吗？",
             "您还有什么想问的？",
             "您还想了解些什么？",
-            "还有其他关于甘薯的问题吗？",
-            "想成为吴家卓吗？",
+            "还有其他关于康养和膳食的问题吗？",
+            "想变得更加健康吗？",
             "还有什么疑问呢",
             "嘿嘿嘿你说呀？",
-            "太豆了你，赶紧说？"
+
         ]
         self.mcp_connected = False
         
@@ -139,20 +139,14 @@ class SweetPotatoChatbox:
         
         # 初始化人脸识别系统
         face_system = FaceRecognizer()
-        if not face_system.initialize():
-            logging.error("❌ 人脸识别系统初始化失败")
-            await temp_tts.speak_text("人脸识别系统初始化失败,请检查人脸模型", wait=True)
-            await temp_tts.shutdown()
-            print("❌ 人脸识别系统初始化失败，程序退出")
-            return False, None
-        
+    
         # 执行人脸认证
-        auth_success, user_name = face_system.recognize_face()
+        auth_success, user_name = face_system.main("frame.jpg")
         
         # 根据认证结果提供语音反馈
         if auth_success:
             self.conversation_manager.tracking_data['user_id'] = user_name
-            welcome_message = f"欢迎你{user_name}已进入甘薯知识系统。"
+            welcome_message = f"欢迎你{user_name}已进入中医康养和膳食知识系统。"
             logging.info(f"✅ 认证成功: {user_name}")
             print(f"\n✅ 认证成功！欢迎 {user_name}")
             await temp_tts.speak_text(welcome_message, wait=True)
@@ -168,8 +162,8 @@ class SweetPotatoChatbox:
     async def initialize(self):
         """初始化所有组件"""
         try:
-            logging.info("🚀 正在初始化甘薯问答系统...")
-            print("\n🚀 正在初始化甘薯问答系统...")
+            logging.info("🚀 正在初始化中医康养和膳食问答系统...")
+            print("\n🚀 正在初始化中医康养和膳食问答系统...")
             
             # 初始化TTS
             self.animation_manager.start_animation("初始化语音合成系统")
@@ -218,7 +212,7 @@ class SweetPotatoChatbox:
                 print("⚠️ MCP服务连接失败，部分功能可能不可用")
             
             logging.info("✨ 系统初始化完成")
-            print("\n✨ 系统初始化完成，甘薯知识助手已准备就绪")
+            print("\n✨ 系统初始化完成，你是一个中医康养和膳食专家知识助手已准备就绪")
             return True
             
         except Exception as e:
@@ -310,7 +304,7 @@ class SweetPotatoChatbox:
         if music_intent.get("command") == "播放":
             # 播放音乐操作结果
             if result:
-                clean_result = result.replace("11", "").strip()
+                clean_result = result.strip()
                 await self.tts.speak_text(f"{clean_result}", wait=True)
             
             # 进入音乐模式
@@ -322,7 +316,7 @@ class SweetPotatoChatbox:
             # 处理播放列表命令 - 只打印不读出
         elif music_intent.get("command") == "播放列表":
             if result:
-                clean_result = result.replace("11", "").strip()
+                clean_result = result.strip()
                 # 只打印到控制台，不进行语音播报
                 print(f"\n📋 当前播放列表:\n{clean_result}")
                 # 简短提示已显示播放列表
@@ -332,7 +326,7 @@ class SweetPotatoChatbox:
         elif music_intent.get("command") == "暂停":
             # 播放操作结果
             if result:
-                clean_result = result.replace("11", "").strip()
+                clean_result = result.strip()
                 await self.tts.speak_text(f"{clean_result}", wait=True)
             
             # 音乐已暂停，切换到普通问答模式
@@ -343,7 +337,7 @@ class SweetPotatoChatbox:
         elif music_intent.get("command") == "继续":
             # 播放操作结果
             if result:
-                clean_result = result.replace("11", "").strip()
+                clean_result = result.strip()
                 await self.tts.speak_text(f"{clean_result}", wait=True)
             
             # 重新进入音乐模式
@@ -356,9 +350,9 @@ class SweetPotatoChatbox:
         # 其他音乐命令 - 仅播放结果，保持当前模式
         else:
             if result:
-                clean_result = result.replace("11", "").strip()
-                await self.tts.speak_text(f"{clean_result}", wait=True)
-        
+                clean_result = result.strip()
+                # await self.tts.speak_text(f"{clean_result}", wait=True)
+                logging.info(f"🎵 音乐操作结果: {clean_result}")
         return True
     
     async def music_mode_listening(self):
@@ -408,7 +402,7 @@ class SweetPotatoChatbox:
                         
                         # 播放操作结果
                         if result:
-                            clean_result = result.replace("11", "").strip()
+                            clean_result = result.replace( "").strip()
                             await self.tts.speak_text(f"{clean_result}", wait=True)
                         
                         # 特殊命令处理
@@ -595,7 +589,7 @@ class SweetPotatoChatbox:
         # 根据当前模式进行处理
         if self.music_interaction_mode == "normal":
             # 正常问答模式：提示用户问题
-            prompt_text = "请问您有什么关于甘薯的问题？" if self.first_interaction else random.choice(self.follow_up_prompts)
+            prompt_text = "请问您有什么关于膳食和健康的问题？" if self.first_interaction else random.choice(self.follow_up_prompts)
             self.first_interaction = False
             
             try:
@@ -653,9 +647,9 @@ class SweetPotatoChatbox:
                 self.music_listen_task.cancel()
             
             try:
-                await self.tts.speak_text("好的，感谢使用甘薯知识助手，再见！", wait=True)
+                await self.tts.speak_text("好的，感谢使用中医康养和膳食专家知识助手，再见！", wait=True)
             except:
-                print("👋 感谢使用甘薯知识助手，再见！")
+                print("👋 感谢使用中医康养和膳食知识助手，再见！")
                 
             self.shutdown_event.set()
             return None
@@ -703,7 +697,7 @@ class SweetPotatoChatbox:
             # 流式生成回答并同步进行语音合成
             async for chunk in self.qa.ask_stream(question):
                 # 处理搜索提示
-                if first_chunk and chunk.startswith("正在执行网络搜索任务"):
+                if first_chunk and chunk.startswith("完成！"):
                     await self.tts.speak_text("正在开启网络搜索任务", wait=True)
                     # await asyncio.sleep(0.5)
                     # 切换到搜索动画，只切换一次
@@ -718,6 +712,26 @@ class SweetPotatoChatbox:
                         self.animation_manager.stop_current()
                         print(f"\n💡 {self.recognized_user}，关于'{question}'，")
                         first_chunk = False
+
+
+            async for chunk in self.qa.ask_stream(question):
+                # 处理搜索提示
+                if first_chunk and chunk.startswith("好了"):
+                    await self.tts.speak_text("正在进行拍照识别", wait=True)
+                    # await asyncio.sleep(0.5)
+                    # 切换到搜索动画，只切换一次
+                    if not search_animation_started:
+                        self.animation_manager.start_animation("拍照识别")
+                        search_animation_started = True
+                    first_chunk = False
+                    continue
+                else:
+                    if first_chunk:
+                        # 停止思考动画，开始输出答案
+                        self.animation_manager.stop_current()
+                        print(f"\n💡 {self.recognized_user}，关于'{question}'，")
+                        first_chunk = False
+   
                 
                 # 累积答案
                 self.current_answer += chunk
@@ -781,7 +795,7 @@ class SweetPotatoChatbox:
         
         # 启动提示
         print("\n" + "═" * 80)
-        print(f"{'🌟 甘薯知识问答系统已启动 🌟':^80}")
+        print(f"{'🌟 中医康养和膳食知识问答系统已启动 🌟':^80}")
         print(f"{'👤 用户: ' + self.recognized_user:^80}")
         print(f"{'⌨️  按 Ctrl+C 退出':^80}")
         print("═" * 80 + "\n")
@@ -789,12 +803,12 @@ class SweetPotatoChatbox:
         try:
             # 初始欢迎语
             try:
-                await self.tts.speak_text(f"{self.recognized_user}，甘薯知识问答系统已启动。", wait=True)
+                await self.tts.speak_text(f"{self.recognized_user}，中医康养和膳食知识问答系统已启动。", wait=True)
                 await asyncio.sleep(0.5)
                 await self.clear_audio_buffer()
             except Exception as e:
                 logging.error(f"⚠️ 播放欢迎消息失败: {e}")
-                print(f"👋 {self.recognized_user}，甘薯知识问答系统已启动。")
+                print(f"👋 {self.recognized_user}，中医康养和膳食知识问答系统已启动。")
 
             while not self.shutdown_event.is_set():
                 # 获取用户问题
@@ -850,7 +864,7 @@ class SweetPotatoChatbox:
 
             if self.tts and not self.shutdown_event.is_set():
                 try:
-                    await self.tts.speak_text("感谢使用甘薯知识助手再见！", wait=True)
+                    await self.tts.speak_text("感谢使用中医康养和膳食知识助手再见！", wait=True)
                 except Exception as e:
                     logging.error(f"⚠️ 播放告别语音失败: {e}")
             
@@ -882,11 +896,11 @@ async def main():
     """程序入口点"""
     # 显示启动横幅
     print("\n" + "═" * 80)
-    print(f"{'🚀 甘薯知识问答系统 v2.0 🚀':^80}")
+    print(f"{'🚀 中医康养和膳食知识问答系统 v2.0 🚀':^80}")
     print(f"{'启动中...':^80}")
     print("═" * 80 + "\n")
     
-    parser = argparse.ArgumentParser(description="甘薯知识问答系统")
+    parser = argparse.ArgumentParser(description="中医康养和膳食知识问答系统")
     parser.add_argument("--voice", default="zh-CN-XiaoyiNeural", help="TTS语音")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     args = parser.parse_args()

@@ -3,11 +3,16 @@ import base64
 import logging
 import os
 import time
+import subprocess
+import numpy as np
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 from dashscope import MultiModalConversation
 import json
 from pathlib import Path
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 配置日志系统
 logging.basicConfig(
@@ -24,60 +29,116 @@ PHOTOS_DIR = Path("photos")
 PHOTOS_DIR.mkdir(exist_ok=True)
 
 class CameraManager:
-    """摄像头管理器 - 负责摄像头初始化、拍照和资源管理"""
+    """树莓派摄像头管理器 - 使用libcamera-vid进行拍照"""
     
     def __init__(self, max_photos=10):
-        self.camera = None
+        self.process = None
         self.is_initialized = False
         self.max_photos = max_photos
         
-    def clear_camera_buffer(self):
-        """清空摄像头缓冲区，确保获取最新帧"""
-        if not self.camera or not self.camera.isOpened():
-            return
-            
-        # 读取并丢弃多个帧以清空缓冲区
-        # 这个数量可能需要根据实际情况调整
-        for _ in range(5):
-            self.camera.grab()  # grab() 比 read() 更快，只抓取不解码
-            
-        # 短暂延迟确保新帧到达
-        time.sleep(0.1)
-        
-        logger.info("已清空摄像头缓冲区")
-
     def initialize_camera(self) -> bool:
-        """初始化摄像头设备"""
+        """初始化摄像头，使用libcamera-vid"""
         try:
-            # 尝试多个摄像头索引
-            for camera_index in range(3):
-                self.camera = cv2.VideoCapture(camera_index)
-                if self.camera.isOpened():
-                    # 设置摄像头参数优化
-                    self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                    self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                    self.camera.set(cv2.CAP_PROP_FPS, 30)
-                    
-                    # 预热摄像头
-                    for _ in range(5):
-                        ret, _ = self.camera.read()
-                        if ret:
-                            break
-                        time.sleep(0.1)
-                    
-                    self.is_initialized = True
-                    logger.info(f"摄像头初始化成功，使用设备索引: {camera_index}")
-                    return True
-                else:
-                    self.camera.release()
-
-            logger.error("无法找到可用的摄像头设备")
-            return False
+            # 优化摄像头参数
+            cmd = "libcamera-vid -t 0 --width 1280 --height 720 --codec mjpeg --nopreview --framerate 15 -o -"
             
+            self.process = subprocess.Popen(
+                cmd.split(), 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                bufsize=1024*1024
+            )
+            
+            # 等待摄像头启动
+            time.sleep(2)
+            
+            # 检查进程是否正常运行
+            if self.process.poll() is None:
+                self.is_initialized = True
+                logger.info("树莓派摄像头初始化成功")
+                return True
+            else:
+                error_output = self.process.stderr.read().decode()
+                logger.error(f"摄像头启动失败: {error_output}")
+                return False
+                
         except Exception as e:
             logger.error(f"摄像头初始化失败: {e}")
             return False
+
+    def get_frame(self, flush_buffer=True):
+        """从libcamera-vid获取单个视频帧"""
+        if not self.is_initialized:
+            return False, None
+            
+        buffer = bytearray()
         
+        try:
+            # 如果需要刷新缓冲区（获取最新帧）
+            if flush_buffer:
+                # 设置非阻塞模式临时读取并丢弃旧数据
+                import fcntl
+                import os
+                
+                # 获取文件描述符
+                fd = self.process.stdout.fileno()
+                
+                # 保存当前标志
+                old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                
+                # 设置非阻塞模式
+                fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
+                
+                # 读取并丢弃所有可用数据
+                try:
+                    while True:
+                        chunk = self.process.stdout.read(65536)
+                        if not chunk:
+                            break
+                except (IOError, OSError):
+                    # 没有更多数据可读，这是预期的
+                    pass
+                
+                # 恢复阻塞模式
+                fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
+                
+                # 等待新帧
+                time.sleep(0.1)
+            
+            # 读取数据直到找到完整的JPEG帧
+            timeout_start = time.time()
+            timeout = 5  # 5秒超时
+            
+            while time.time() - timeout_start < timeout:
+                data = self.process.stdout.read(4096)
+                if not data:
+                    logger.warning("无法读取摄像头数据")
+                    return False, None
+                    
+                buffer.extend(data)
+                
+                # 查找JPEG帧的开始和结束标记
+                start = buffer.find(b'\xff\xd8')  # JPEG开始标记
+                end = buffer.find(b'\xff\xd9', start)  # JPEG结束标记
+                
+                if start != -1 and end != -1:
+                    # 提取完整的JPEG帧
+                    jpeg = buffer[start:end + 2]
+                    
+                    # 解码为OpenCV格式
+                    frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        # 翻转帧（如果需要）
+                        frame = cv2.flip(frame, 0)
+                        return True, frame
+                        
+            logger.error("获取帧超时")
+            return False, None
+            
+        except Exception as e:
+            logger.error(f"获取视频帧失败: {e}")
+            return False, None
+    
     def manage_photo_storage(self):
         """管理照片存储，确保不超过最大数量"""
         try:
@@ -118,15 +179,20 @@ class CameraManager:
             # 在拍照前管理存储空间
             self.manage_photo_storage()
             
-            # 清空摄像头缓冲区 - 关键修改
-            self.clear_camera_buffer()
+            # 丢弃一些旧帧，确保获取最新图像
+            logger.info("正在获取最新帧...")
+            for _ in range(3):
+                ret, frame = self.get_frame()
+                if not ret:
+                    continue
+                time.sleep(0.1)
             
-            # 现在读取最新的帧
-            ret, frame = self.camera.read()
-            if not ret:
+            # 获取最终的拍照帧
+            ret, frame = self.get_frame()
+            if not ret or frame is None:
                 return False, "", "无法捕获图像"
             
-            # 生成唯一文件名 - 添加毫秒以避免同名文件
+            # 生成唯一文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             filename = f"photo_{timestamp}.jpg"
             photo_path = PHOTOS_DIR / filename
@@ -158,12 +224,51 @@ class CameraManager:
             logger.error(f"拍照过程出错: {e}")
             return False, "", f"拍照失败: {str(e)}"
     
+    def capture_single_photo(self) -> tuple[bool, np.ndarray, str]:
+        """
+        拍摄单张照片并返回图像数据（不保存到文件）
+        
+        Returns:
+            tuple: (成功标志, 图像数组, 错误信息)
+        """
+        if not self.is_initialized:
+            if not self.initialize_camera():
+                return False, None, "摄像头初始化失败"
+        
+        try:
+            # 丢弃一些旧帧，确保获取最新图像
+            for _ in range(3):
+                ret, frame = self.get_frame()
+                if not ret:
+                    continue
+                time.sleep(0.1)
+            
+            # 获取最终的拍照帧
+            ret, frame = self.get_frame()
+            if not ret or frame is None:
+                return False, None, "无法捕获图像"
+            
+            return True, frame, ""
+                
+        except Exception as e:
+            logger.error(f"拍照过程出错: {e}")
+            return False, None, f"拍照失败: {str(e)}"
+    
     def release_camera(self):
         """释放摄像头资源"""
-        if self.camera is not None:
-            self.camera.release()
-            self.is_initialized = False
-            logger.info("摄像头资源已释放")
+        if self.process is not None:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=3)
+                logger.info("摄像头进程已终止")
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                logger.warning("强制终止摄像头进程")
+            except Exception as e:
+                logger.error(f"释放摄像头资源失败: {e}")
+            finally:
+                self.process = None
+                self.is_initialized = False
 
 
 camera_manager = CameraManager(max_photos=10)
@@ -171,9 +276,6 @@ camera_manager = CameraManager(max_photos=10)
 def encode_image_to_base64(image_path: str) -> str:
     """将图片编码为base64格式"""
     try:
-        # 添加日志以跟踪正在编码的文件
-        # logger.info(f"正在编码图片: {image_path}")
-        
         # 验证文件路径
         if not os.path.exists(image_path):
             logger.error(f"图片文件不存在: {image_path}")
@@ -181,26 +283,39 @@ def encode_image_to_base64(image_path: str) -> str:
         
         # 获取文件信息
         file_stat = os.stat(image_path)
-        # logger.info(f"图片文件信息 - 大小: {file_stat.st_size} bytes, 修改时间: {datetime.fromtimestamp(file_stat.st_mtime)}")
         
         with open(image_path, 'rb') as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-            # logger.info(f"图片编码成功: {image_path}, 编码长度: {len(encoded_string)}")
             return f"data:image/jpeg;base64,{encoded_string}"
     except Exception as e:
         logger.error(f"图片编码失败 {image_path}: {e}")
         return ""
 
-def analyze_image_with_qwen(image_path: str, prompt: str = None) -> str:
+def encode_frame_to_base64(frame: np.ndarray) -> str:
+    """将OpenCV帧编码为base64格式"""
+    try:
+        # 编码为JPEG格式
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+        ret, buffer = cv2.imencode('.jpg', frame, encode_params)
+        if not ret:
+            return ""
+        
+        # 转换为base64
+        encoded_string = base64.b64encode(buffer).decode('utf-8')
+        return f"data:image/jpeg;base64,{encoded_string}"
+        
+    except Exception as e:
+        logger.error(f"帧编码失败: {e}")
+        return ""
+
+def analyze_image_with_qwen(image_data: str, prompt: str = None) -> str:
     """使用通义千问视觉模型分析图片"""
     try:
         # 简化默认提示词
         if prompt is None:
             prompt = "用聊天的方式根据问题来简洁描述图片内容"
         
-        # 编码图片
-        base64_image = encode_image_to_base64(image_path)
-        if not base64_image:
+        if not image_data:
             return "图片编码失败"
         
         # 构建消息内容
@@ -209,7 +324,7 @@ def analyze_image_with_qwen(image_path: str, prompt: str = None) -> str:
                 "role": "user",
                 "content": [
                     {"text": prompt},
-                    {"image": base64_image}
+                    {"image": image_data}
                 ]
             }
         ]
@@ -218,12 +333,11 @@ def analyze_image_with_qwen(image_path: str, prompt: str = None) -> str:
         response = MultiModalConversation.call(
             model='qwen-vl-max',
             messages=messages,
-            api_key=''
+            api_key='sk-08bb8f6bf6ad4bbd9f33913fb6b6e248'
         )
         
         if response.status_code == 200:
             result = response.output.choices[0].message.content
-            # logger.info("图片分析完成")
             return result
         else:
             logger.error(f"模型调用失败: {response.message}")
@@ -257,22 +371,45 @@ def take_photo_and_analyze(prompt = None) -> str:
             logger.error(f"照片文件为空: {photo_path}")
             return "照片保存不完整"
         
-        # logger.info(f"准备分析照片: {photo_path}, 文件大小: {file_size} bytes")
-        
         # 使用简化的提示词
         if prompt is None:
             prompt = "用聊天的方式根据问题来简洁描述图片内容"
         
-        # AI分析图片
-        analysis_result = analyze_image_with_qwen(photo_path, prompt)
-        
-        # 记录分析完成
-        # logger.info(f"已分析照片: {photo_path}")
+        # 编码图片并分析
+        base64_image = encode_image_to_base64(photo_path)
+        analysis_result = analyze_image_with_qwen(base64_image, prompt)
         
         return analysis_result
         
     except Exception as e:
         logger.error(f"拍照分析失败: {e}")
+        return "拍照分析失败"
+
+@mcp.tool()
+def take_photo_and_analyze_direct(prompt = None) -> str:
+    """直接拍照并分析（不保存到文件，更快速）"""
+    try:
+        # 直接拍摄照片获取帧数据
+        success, frame, error_msg = camera_manager.capture_single_photo()
+        
+        if not success:
+            return f"拍照失败: {error_msg}"
+        
+        # 使用简化的提示词
+        if prompt is None:
+            prompt = "用聊天的方式根据问题来简洁描述图片内容"
+        
+        # 直接编码帧并分析
+        base64_image = encode_frame_to_base64(frame)
+        if not base64_image:
+            return "图片编码失败"
+            
+        analysis_result = analyze_image_with_qwen(base64_image, prompt)
+        
+        return analysis_result
+        
+    except Exception as e:
+        logger.error(f"直接拍照分析失败: {e}")
         return "拍照分析失败"
 
 @mcp.tool()
@@ -311,7 +448,8 @@ def analyze_existing_photo(photo_path: str, prompt: str = None) -> str:
         if prompt is None:
             prompt = "用聊天的方式根据问题来简洁描述图片内容"
         
-        analysis_result = analyze_image_with_qwen(photo_path, prompt)
+        base64_image = encode_image_to_base64(photo_path)
+        analysis_result = analyze_image_with_qwen(base64_image, prompt)
         return analysis_result
         
     except Exception as e:
@@ -334,6 +472,7 @@ def get_camera_status() -> str:
         return json.dumps({
             "status": "success",
             "camera_status": status,
+            "camera_type": "libcamera (树莓派)",
             "photos_directory": str(PHOTOS_DIR),
             "total_photos": len(list(PHOTOS_DIR.glob("*.jpg")))
         }, ensure_ascii=False)
@@ -388,11 +527,10 @@ def list_photos() -> str:
 def cleanup():
     """程序退出时的清理操作"""
     camera_manager.release_camera()
-    cv2.destroyAllWindows()
     logger.info("摄像头资源清理完成")
 
 if __name__ == "__main__":
-    logger.info("启动摄像头拍照识别MCP服务器...")
+    logger.info("启动树莓派摄像头拍照识别MCP服务器...")
     
     # 注册退出时的清理操作
     import atexit

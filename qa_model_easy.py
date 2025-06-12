@@ -37,15 +37,15 @@ class LlamaCppEmbeddings(Embeddings):
 class KnowledgeQA:
     def __init__(
         self,
-        faiss_index_path="/home/wuye/vscode/raspberrypi_5/faiss_index",
+        faiss_index_path="/home/joe/chatbox/faiss_index",
         temperature=0.3,
-        k_documents=3,
-        embedding_model_path="/home/wuye/vscode/raspberrypi_5/text2vec_base_chinese_q8.gguf",
+        k_documents=6,
+        embedding_model_path="/home/joe/chatbox/model/text2vec_base_chinese_q8.gguf",
         conversation_manager=None,
         model_name="qwen-turbo-latest",
-        api_key='',
+        api_key='sk-4ee9cb3d8d704b23a04abbba3ab19020',
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        mcp_config_path="/home/wuye/vscode/raspberrypi_5/rasoberry/mcp_server_config.json"
+        mcp_config_path="/home/joe/chatbox/mcp_server_config.json"
     ):
         self.faiss_index_path = faiss_index_path
         self.k_documents = k_documents
@@ -58,9 +58,9 @@ class KnowledgeQA:
             "抱歉我不太会",
             "我还不了解这方面。",
             "对不起，我没有这方面的资料。",
-            "我不知道这个答案，不过你可以去问吴家卓",
+            "我不知道这个答案，不过你可以去问专业医师",
             "好像不太会？",
-            "我里个豆阿，你问出这么难的问题我怎么会呢？"
+     
         ]
         
         # 初始化对话管理器
@@ -113,7 +113,7 @@ class KnowledgeQA:
         
         # 添加网络信息相关关键词（需要实时信息的查询）
         self.web_info_keywords = [
-            "最新", "最近", "现在", "今天", "目前", "当前",
+            "最新",  "今天", "目前", "当前",
             "实时", "新闻", "热点", "天气", "股价", "比分",
             "排行", "趋势", "动态", "更新", "价格","明天","后天","昨天","前天","大后天","大前天","前几天","后几天","之后","你知道吗"
         ,"月","号","年","天","那天"
@@ -248,7 +248,7 @@ class KnowledgeQA:
         
         # 检测需要实时信息的关键词
         web_info_keywords = [
-            "最新", "最近", "现在", "今天", "目前", "当前", "实时", 
+            "最新", "今天", "目前", "当前", "实时", 
             "新闻", "热点", "天气", "股价", "比分", "排行", "趋势", 
             "动态", "更新", "价格", "明天", "后天", "昨天"
         ]
@@ -282,7 +282,7 @@ class KnowledgeQA:
         query = intent.get("query", "")
         
         if command == "search" and query:
-            yield "正在执行网络搜索任务..."
+            yield "完成"
             await asyncio.sleep(0.3)
             # yield f"正在搜索关键词：{query}..."
             await asyncio.sleep(0.5)
@@ -376,7 +376,7 @@ class KnowledgeQA:
                     )
                 
                 # 返回播放结果
-                return f"正在为您播放{song_name}：{tool_result}"
+                return f"正在为您播放{song_name}"
                 
             # 处理其他音乐控制命令
             elif command in ["暂停", "继续", "停止", "下一首", "上一首", "播放列表"]:
@@ -447,7 +447,7 @@ class KnowledgeQA:
         explicit_camera_commands = {
             "拍照识别": [
                  "看到","拍个照识别",  
-                "看看", "拍照分析", "识别","这是","这里","手里","面前","镜头","相机","摄像头","眼前"
+                "看看", "拍照分析", "识别","诊断","这里","这是","手里","面前","镜头","相机","摄像头","眼前"
             ],
             "拍照": [
                 "拍照", "拍张照", "拍个照", "照相", "拍一张", "来张照片",
@@ -675,54 +675,54 @@ class KnowledgeQA:
                 # 颜色外观类
                 "appearance": {
                     "keywords": ["什么颜色", "颜色是", "什么样子", "长什么样", "外观", "形状"],
-                    "prompt_template": "请描述外观特征来回答：{question}。请具体说明颜色、形状等特征。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请描述外观特征来回答：{question}。请具体说明颜色、形状等特征。用中医康养和膳食专家的角度来用聊天的方式简洁回答图片内容"
                 },
                 
                 # 品牌标识类
                 "brand": {
                     "keywords": ["什么牌子", "哪个品牌", "什么品牌", "商标", "logo", "标志"],
-                    "prompt_template": "请识别品牌或标识：{question}。如果能识别出品牌，请明确说出品牌名称。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请识别品牌或标识：{question}。如果能识别出品牌，请明确说出品牌名称。用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"
                 },
                 
                 # 时间相关类
                 "time": {
                     "keywords": ["几点", "什么时间", "时间是", "显示时间", "钟表"],
-                    "prompt_template": "请读取时间信息：{question}。如果图中有时间显示，请准确读出。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请读取时间信息：{question}。如果图中有时间显示，请准确读出。用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"
                 },
                 
                 # 相似度判断类
                 "similarity": {
                     "keywords": ["像什么", "像不像", "是不是", "看起来像", "类似", "相似"],
-                    "prompt_template": "请进行相似性判断：{question}。请说明相似或不相似的理由。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请进行相似性判断：{question}。请说明相似或不相似的理由。用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"
                 },
                 
                 # 材质属性类
                 "material": {
                     "keywords": ["什么材质", "什么材料", "是金属", "是塑料", "是木头", "质地"],
-                    "prompt_template": "请判断材质或质地：{question}。请根据视觉特征推断可能的材质。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请判断材质或质地：{question}。请根据视觉特征推断可能的材质。用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"
                 },
                 
                 # 状态条件类
                 "condition": {
                     "keywords": ["新的还是旧的", "完好", "破损", "干净", "脏", "整齐", "凌乱", "状态"],
-                    "prompt_template": "请评估状态或条件：{question}。请描述具体的状态特征。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请评估状态或条件：{question}。请描述具体的状态特征。用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"
                 },
                 
                 # 功能用途类
                 "function": {
                     "keywords": ["用来做什么", "什么用途", "干什么用的", "功能是", "用来"],
-                    "prompt_template": "请说明功能或用途：{question}。请根据物品特征推断其可能的用途。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请说明功能或用途：{question}。请根据物品特征推断其可能的用途。用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"
                 },
                 
                 # 安全相关类
                 "safety": {
                     "keywords": ["危险吗", "安全吗", "有危险", "是否安全"],
-                    "prompt_template": "请评估安全性：{question}。请指出可能的安全隐患或确认安全状态。用聊天的方式简洁回答图片内容"
+                    "prompt_template": "请评估安全性：{question}。请指出可能的安全隐患或确认安全状态。用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"
                 }
             }
             
             # 根据用户问题构建合适的提示词
-            prompt = "用聊天的方式简洁回答图片内容"  # 默认提示词
+            prompt = "用中医康养和膳食专家的角度用聊天的方式简洁回答图片内容"  # 默认提示词
             
             if user_question:
                 question_lower = user_question.lower()
@@ -806,15 +806,12 @@ class KnowledgeQA:
         if not text or not isinstance(text, str):
             return "识别完成"
         
-       
-        
         # 打印原始返回结果用于调试
         # logging.info(f"原始分析结果: {text}")
         
         # 处理可能的JSON格式返回
         if text.startswith('{') and '"text"' in text:
             try:
-             
                 parsed_data = json.loads(text)
                 if isinstance(parsed_data, dict) and 'text' in parsed_data:
                     text = parsed_data['text']
@@ -826,23 +823,240 @@ class KnowledgeQA:
         
         # 移除Markdown格式但保留内容
         text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        
+        # 不要过度清理短文本（比如数字答案）
+        if len(text) < 10:  # 短答案直接返回
+            return text
+        
+        # 对于较长文本，进行更多清理
         text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*[-*]\s*', '', text, flags=re.MULTILINE)
-        
-        # 清理多余空格和换行
         text = re.sub(r'\s+', ' ', text).strip()
         
-        # 如果文本为空或只有标点，返回默认值
-        if not text or len(text.strip('。，')) < 2:
-            return "识别完成。"
-        
-        # 确保以句号结尾
-        if text and not text.endswith(('。', '！', '？')):
+        # 确保以句号结尾（如果没有标点的话）
+        if text and not text.endswith(('。', '！', '？', '.', '!', '?')):
             text += '。'
         
         # logging.info(f"清理后结果: {text}")
         return text
+    def detect_health_related_keywords(self, question):
+        """检测中医康养和健康相关关键词"""
+        health_keywords = {
+            # 中医相关
+            "中医": ["中医", "中药", "经络", "穴位", "气血", "阴阳", "五行", "脉象", "舌诊"],
+            
+            # 身体部位和症状
+            "身体": ["身体", "体质", "体检", "检查报告", "化验单", "体检报告", "检验报告", 
+                    "血常规", "尿常规", "肝功能", "肾功能", "血糖", "血压", "心电图"],
+            
+            # 症状描述
+            "症状": ["疼痛", "不舒服", "难受", "发烧", "咳嗽", "头疼", "头晕", "恶心", 
+                    "腹泻", "便秘", "失眠", "疲劳", "乏力", "虚弱"],
+            
+            # 康养膳食
+            "膳食": ["膳食", "食疗", "药膳", "养生", "保健", "营养", "饮食", "食补", 
+                    "滋补", "调理", "调养", "补充", "食材", "配方"],
+            
+            # 健康状态
+            "健康": ["健康", "亚健康", "免疫力", "抵抗力", "精神状态", "气色", 
+                    "面色", "舌苔", "脉搏","舌头","嘴巴", "脸色", "皮肤"],
+            
+            # 常见问诊用语
+            "问诊": ["看看我的", "请你看", "这个是", "这是我的", "我的这个", 
+                     "分析一下", "什么问题", "正常", "有问题吗","诊断","症状", "病情","医生"]
+        }
+        
+        question_lower = question.lower()
+        
+        # 检查是否包含健康相关关键词
+        for category, keywords in health_keywords.items():
+            for keyword in keywords:
+                if keyword in question_lower:
+                    return True, category
+        
+        return False, None
 
+    async def _photo_analysis_with_knowledge(self, user_question=""):
+        """增强的拍照分析 - 结合知识库"""
+        try:
+            # 检测是否是健康相关问题
+            is_health_related, category = self.detect_health_related_keywords(user_question)
+            
+            # 构建图像分析提示词
+            if is_health_related:
+                # 健康相关的特殊提示词
+                health_prompts = {
+                    "中医": "请仔细观察图片中的舌苔、面色、体征等中医诊断相关特征，并详细描述。",
+                    "身体": "请详细描述图片中的体检报告或身体状况相关内容，包括数值、指标等。",
+                    "症状": "请观察并描述图片中显示的症状或体征表现。",
+                    "膳食": "请识别图片中的食材、药材或膳食内容，并描述其特征。",
+                    "健康": "请分析图片中反映的健康状态相关信息。",
+                    "问诊": "请详细描述图片中的医疗相关内容。"
+                }
+                
+                base_prompt = health_prompts.get(category, "请详细分析图片内容。")
+                prompt = f"{base_prompt} 用户问题：{user_question}"
+            else:
+                # 非健康相关使用原有逻辑
+                return await self._photo_analysis(user_question)
+            
+            # 调用图像分析
+            tool_result = await self.call_tool("camera-take_photo_and_analyze", {
+                "prompt": prompt
+            })
+            
+            # 处理图像分析结果
+            if isinstance(tool_result, str):
+                try:
+                    result_data = json.loads(tool_result)
+                    image_analysis = result_data.get("analysis", tool_result)
+                except:
+                    image_analysis = tool_result
+            else:
+                image_analysis = tool_result.get("analysis", "识别完成")
+            
+            # 清理图像分析文本
+            image_analysis = self._clean_analysis_text(image_analysis)
+            
+            # 如果是健康相关问题，查询知识库
+            if is_health_related:
+                # 构建知识库查询
+                kb_query = f"{user_question} {image_analysis}"
+                
+                # 查询知识库
+                docs = await asyncio.to_thread(
+                    self.vectorstore.as_retriever(search_kwargs={"k": self.k_documents}).invoke,
+                    kb_query
+                )
+                
+                if docs:
+                    # 构建结合图像和知识库的回答
+                    doc_context = "\n\n".join([d.page_content for d in docs])
+                    
+                    # 构建综合提示词
+                    combined_prompt = f"""
+                                图像分析结果：
+                                {image_analysis}
+                                相关知识库内容：
+                                {doc_context}
+                                用户问题：{user_question}
+                                请根据图像分析结果和知识库内容，为用户提供专业的中医康养建议或膳食指导。请用中医专家说话的方式简洁回答，输出为一段"""
+
+                    # 调用LLM生成综合回答
+                    messages = [{"role": "user", "content": combined_prompt}]
+                    
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=self.model_name,
+                            messages=messages,
+                            temperature=0.7,
+                            max_tokens=500
+                        )
+                        
+                        combined_answer = response.choices[0].message.content
+                        return combined_answer
+                        
+                    except Exception as e:
+                        logging.error(f"生成综合回答失败: {e}")
+                        # 如果LLM调用失败，返回图像分析结果
+                        return f"图像识别结果：{image_analysis}\n\n（知识库查询遇到问题，仅提供图像分析结果）"
+                else:
+                    # 没有找到相关知识库内容，仅返回图像分析
+                    return f"图像识别结果：{image_analysis}\n\n（未在知识库中找到相关专业内容）"
+            else:
+                # 非健康相关，直接返回图像分析结果
+                return image_analysis
+                
+        except Exception as e:
+            logging.error(f"增强拍照分析失败: {e}")
+            return "识别失败"
+
+    async def handle_camera_command_stream(self, intent):
+        """流式处理摄像头命令 - 支持知识库结合"""
+        command = intent.get("command")
+        original_question = intent.get("original_question", "")
+        start_time = time.time()
+        
+        try:
+            if command == "拍照":
+                yield "正在启动摄像头..."
+                await asyncio.sleep(0.1)
+                result = await self._simple_photo()
+                yield result
+                
+            elif command == "拍照识别":
+                # 检测是否是健康相关问题
+                yield "好了"
+                is_health_related, category = self.detect_health_related_keywords(original_question)
+                
+                if is_health_related:
+                    
+                    await asyncio.sleep(0.3)
+                    
+                    # 使用增强的分析方法
+                    result = await self._photo_analysis_with_knowledge(original_question)
+                    
+                    # 分块输出结果
+                    if result and len(result) > 50:
+                        # 智能分段输出
+                        sentences = re.split(r'([。！？\n])', result)
+                        current_chunk = ""
+                        
+                        for i in range(0, len(sentences), 2):
+                            if i + 1 < len(sentences):
+                                sentence = sentences[i] + sentences[i + 1]
+                            else:
+                                sentence = sentences[i]
+                            
+                            current_chunk += sentence
+                            
+                            # 当累积到一定长度时输出
+                            if len(current_chunk) >= 40 or i >= len(sentences) - 2:
+                                yield current_chunk
+                                current_chunk = ""
+                                await asyncio.sleep(0.01)
+                    else:
+                        yield result
+                else:
+                    # 非健康相关，使用原有逻辑
+                    
+                    await asyncio.sleep(0.2)
+                    
+                    result = await self._photo_analysis(original_question)
+                    
+                    if result and len(result) > 50:
+                        chunk_size = 40
+                        for i in range(0, len(result), chunk_size):
+                            chunk = result[i:i + chunk_size]
+                            yield chunk
+                            await asyncio.sleep(0.01)
+                    else:
+                        yield result
+                        
+            elif command == "查看照片":
+                await asyncio.sleep(0.2)
+                result = await self._list_photos()
+                yield result
+                
+            elif command == "摄像头状态":
+                await asyncio.sleep(0.2)
+                result = await self._camera_status()
+                yield result
+            else:
+                yield "摄像头命令无效"
+            
+            # 记录对话
+            if hasattr(self, 'conversation_manager'):
+                response_time = time.time() - start_time
+                await self.conversation_manager.add_conversation_entry(
+                    f"摄像头: {command}", 
+                    result if 'result' in locals() else "操作完成", 
+                    response_time
+                )
+            
+        except Exception as e:
+            logging.error(f"摄像头操作失败: {e}")
+            yield "摄像头操作出错"
     # ==================== 核心问答处理模块 ====================
         
     # 修正的流式回答方法 - 基于test.py的实现
@@ -904,7 +1118,7 @@ class KnowledgeQA:
                 yield result
                 return
 
-            query = "你是一个甘薯专家，请你以说话的标准回答,请你根据参考内容回答，回答输出为一段，回答内容简洁，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
+            query = "你是一个中医康养和膳食专家，请你以说话的标准回答,请你根据参考内容严格详细回答，回答输出为一段，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
             
             doc_context = "\n\n".join([d.page_content for d in docs])
             
@@ -986,7 +1200,7 @@ class KnowledgeQA:
                 return result
                 
             # 构建查询和上下文 - 与test.py保持一致
-            query = "你是一个甘薯专家，请你以说话的标准回答，请你根据参考内容回答，回答输出为一段，回答内容简洁，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
+            query = "你是一个中医康养和膳食专家，请你以说话的标准回答，请你根据参考内容严格详细回答，回答输出为一段，如果参考内容中没有相关信息，请回答'{}'。".format(random.choice(self.unknown_responses))
             doc_context = "\n\n".join([d.page_content for d in docs])
            
             if context:
@@ -1049,7 +1263,7 @@ async def main():
     conversation_manager = ConversationManager(max_history=10)
     qa = KnowledgeQA(conversation_manager=conversation_manager)
     
-    print("甘薯知识助手已启动，您可以开始提问（支持本地知识库、播放音乐、联网搜索、摄像头拍照）")
+    print("中医膳食和康养知识助手已启动，您可以开始提问（支持本地知识库、播放音乐、联网搜索、摄像头拍照）")
     print("输入'退出'或'exit'可以结束对话")
     
     while True:
