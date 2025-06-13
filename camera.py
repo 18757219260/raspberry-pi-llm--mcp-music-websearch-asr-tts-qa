@@ -333,7 +333,7 @@ def analyze_image_with_qwen(image_data: str, prompt: str = None) -> str:
         response = MultiModalConversation.call(
             model='qwen-vl-max',
             messages=messages,
-            api_key='sk-08bb8f6bf6ad4bbd9f33913fb6b6e248'
+            api_key=''
         )
         
         if response.status_code == 200:
