@@ -43,7 +43,7 @@ class KnowledgeQA:
         embedding_model_path="/home/joe/chatbox/model/text2vec_base_chinese_q8.gguf",
         conversation_manager=None,
         model_name="qwen-turbo-latest",
-        api_key='sk-4ee9cb3d8d704b23a04abbba3ab19020',
+        api_key='',
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         mcp_config_path="/home/joe/chatbox/mcp_server_config.json"
     ):
@@ -1059,7 +1059,7 @@ class KnowledgeQA:
             yield "摄像头操作出错"
     # ==================== 核心问答处理模块 ====================
         
-    # 修正的流式回答方法 - 基于test.py的实现
+  
     async def ask_stream(self, question, use_context=True, use_tools=True):
         """流式响应回答问题 - 支持摄像头和搜索流式输出"""
         start_time = time.time()
