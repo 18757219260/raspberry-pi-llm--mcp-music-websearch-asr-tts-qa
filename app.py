@@ -28,9 +28,9 @@ from mcp.client.sse import sse_client
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 百度ASR API配置
-APP_ID = '118613302'
-API_KEY = '7hSl10mvmtaCndZoab0S3BXQ' 
-SECRET_KEY = 'Fv10TxiFLmWb4UTAdLeA2eaTIE56QtkW'
+APP_ID = ''
+API_KEY = '' 
+SECRET_KEY = ''
 
 # QA模型所需导入
 from langchain_community.vectorstores import FAISS
@@ -594,7 +594,7 @@ class KnowledgeQA:
         embedding_model_path="/home/joe/chatbox/model/text2vec_base_chinese_q8.gguf",
         conversation_manager=None,
         model_name="qwen-turbo-latest",
-        api_key='sk-4ee9cb3d8d704b23a04abbba3ab19020',
+        api_key='',
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         mcp_config_path="mcp_server_config.json"
     ):
